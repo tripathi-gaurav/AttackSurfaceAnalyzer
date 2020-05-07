@@ -67,5 +67,13 @@ namespace AttackSurfaceAnalyzer.Collectors
             EndEvent.Add("Duration", watch?.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) ?? "");
             AsaTelemetry.TrackEvent("EndScanFunction", EndEvent);
         }
+
+        public void Cancel()
+        {
+            if (RunStatus == RUN_STATUS.RUNNING)
+            {
+                RunStatus = RUN_STATUS.CANCELLED;
+            }
+        }
     }
 }
