@@ -668,11 +668,9 @@ namespace AttackSurfaceAnalyzer.Utils
 
         public static void CloseDatabase()
         {
+            Connections.AsParallel().ForAll(cxn => cxn.StopWriting());
             RollBack();
-            Connections.AsParallel().ForAll(cxn =>
-            {
-                cxn.ShutDown();
-            });
+            Connections.AsParallel().ForAll(cxn => cxn.ShutDown());
             Connections.RemoveAll(_ => true);
         }
 

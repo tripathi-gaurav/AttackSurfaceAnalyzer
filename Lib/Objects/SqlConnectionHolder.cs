@@ -58,7 +58,7 @@ namespace AttackSurfaceAnalyzer.Objects
 
             innerQueue = new WriteObject[settings.BatchSize];
 
-            _ = Task.Factory.StartNew(() => KeepFlushQueue());
+            StartWriting();
         }
 
         public void Destroy()
@@ -73,6 +73,11 @@ namespace AttackSurfaceAnalyzer.Objects
             {
                 Log.Warning(e, $"Failed to delete database at {Source}");
             }
+        }
+
+        public void StartWriting()
+        {
+            _ = Task.Factory.StartNew(() => KeepFlushQueue());
         }
 
         public void KeepFlushQueue()
@@ -152,12 +157,17 @@ namespace AttackSurfaceAnalyzer.Objects
             IsWriting = false;
         }
 
-        internal void ShutDown()
+        public void ShutDown()
         {
             KeepRunning = false;
             Connection.Close();
             Connection.Dispose();
             Transaction = null;
+        }
+
+        public void StopWriting()
+        {
+            KeepRunning = false;
         }
     }
 }
