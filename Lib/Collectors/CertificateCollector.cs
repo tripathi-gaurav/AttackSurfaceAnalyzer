@@ -1,6 +1,7 @@
 ﻿// Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 using AttackSurfaceAnalyzer.Objects;
+using AttackSurfaceAnalyzer.Types;
 using AttackSurfaceAnalyzer.Utils;
 using Serilog;
 using System;
@@ -41,11 +42,18 @@ namespace AttackSurfaceAnalyzer.Collectors
 
                         foreach (X509Certificate2 certificate in store.Certificates)
                         {
-                            var obj = new CertificateObject(
+                            if (RunStatus == RUN_STATUS.RUNNING)
+                            {
+                                var obj = new CertificateObject(
                                 StoreLocation: storeLocation.ToString(),
                                 StoreName: storeName.ToString(),
                                 Certificate: new SerializableCertificate(certificate));
-                            Results.Push(obj);
+                                Results.Push(obj);
+                            }
+                            else
+                            {
+                                break;
+                            }
                         }
                         store.Close();
                     }
@@ -72,19 +80,25 @@ namespace AttackSurfaceAnalyzer.Collectors
                         Log.Debug("{0}", _line);
                         try
                         {
-                            using X509Certificate2 certificate = new X509Certificate2("/etc/ssl/certs/" + _line);
+                            if (RunStatus == RUN_STATUS.RUNNING)
+                            {
+                                using X509Certificate2 certificate = new X509Certificate2("/etc/ssl/certs/" + _line);
 
-                            var obj = new CertificateObject(
-                                StoreLocation: StoreLocation.LocalMachine.ToString(),
-                                StoreName: StoreName.Root.ToString(),
-                                Certificate: new SerializableCertificate(certificate));
-                            Results.Push(obj);
+                                var obj = new CertificateObject(
+                                    StoreLocation: StoreLocation.LocalMachine.ToString(),
+                                    StoreName: StoreName.Root.ToString(),
+                                    Certificate: new SerializableCertificate(certificate));
+                                Results.Push(obj);
+                            }
+                            else
+                            {
+                                return;
+                            }
                         }
                         catch (Exception e)
                         {
                             Log.Debug("{0} {1} Issue creating certificate based on /etc/ssl/certs/{2}", e.GetType().ToString(), e.Message, _line);
                             Log.Debug("{0}", e.StackTrace);
-
                         }
                     }
                 }
@@ -123,13 +137,20 @@ namespace AttackSurfaceAnalyzer.Collectors
 
                         while (X509Certificate2Enumerator.MoveNext())
                         {
-                            var certificate = X509Certificate2Enumerator.Current;
+                            if (RunStatus == RUN_STATUS.RUNNING)
+                            {
+                                var certificate = X509Certificate2Enumerator.Current;
 
-                            var obj = new CertificateObject(
-                                StoreLocation: StoreLocation.LocalMachine.ToString(),
-                                StoreName: StoreName.Root.ToString(),
-                                Certificate: new SerializableCertificate(certificate));
-                            Results.Push(obj);
+                                var obj = new CertificateObject(
+                                    StoreLocation: StoreLocation.LocalMachine.ToString(),
+                                    StoreName: StoreName.Root.ToString(),
+                                    Certificate: new SerializableCertificate(certificate));
+                                Results.Push(obj);
+                            }
+                            else
+                            {
+                                return;
+                            }
                         }
                     }
                     else

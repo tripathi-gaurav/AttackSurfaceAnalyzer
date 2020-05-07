@@ -58,28 +58,35 @@ namespace AttackSurfaceAnalyzer.Collectors
 
                     foreach (EventLogEntry? entry in coll)
                     {
-                        if (entry != null)
+                        if (RunStatus == Types.RUN_STATUS.RUNNING)
                         {
-                            if (GatherVerboseLogs || entry.EntryType.ToString() == "Warning" || entry.EntryType.ToString() == "Error")
+                            if (entry != null)
                             {
-                                var sentences = entry.Message.Split('.');
-
-                                //Let's add the periods back.
-                                for (var i = 0; i < sentences.Length; i++)
+                                if (GatherVerboseLogs || entry.EntryType.ToString() == "Warning" || entry.EntryType.ToString() == "Error")
                                 {
-                                    sentences[i] = string.Concat(sentences[i], ".");
+                                    var sentences = entry.Message.Split('.');
+
+                                    //Let's add the periods back.
+                                    for (var i = 0; i < sentences.Length; i++)
+                                    {
+                                        sentences[i] = string.Concat(sentences[i], ".");
+                                    }
+
+                                    EventLogObject obj = new EventLogObject($"{entry.TimeGenerated.ToString("o", CultureInfo.InvariantCulture)} {entry.EntryType.ToString()} {entry.Message}")
+                                    {
+                                        Level = entry.EntryType.ToString(),
+                                        Summary = sentences[0],
+                                        Source = string.IsNullOrEmpty(entry.Source) ? null : entry.Source,
+                                        Timestamp = entry.TimeGenerated,
+                                        Data = new List<string>() { entry.Message }
+                                    };
+                                    Results.Push(obj);
                                 }
-
-                                EventLogObject obj = new EventLogObject($"{entry.TimeGenerated.ToString("o", CultureInfo.InvariantCulture)} {entry.EntryType.ToString()} {entry.Message}")
-                                {
-                                    Level = entry.EntryType.ToString(),
-                                    Summary = sentences[0],
-                                    Source = string.IsNullOrEmpty(entry.Source) ? null : entry.Source,
-                                    Timestamp = entry.TimeGenerated,
-                                    Data = new List<string>() { entry.Message }
-                                };
-                                Results.Push(obj);
-                            }
+                            }                       
+                        }
+                        else
+                        {
+                            return;
                         }
                     }
                 }
@@ -101,26 +108,34 @@ namespace AttackSurfaceAnalyzer.Collectors
 
             void ParseLinuxLog(string path)
             {
+                if (RunStatus != Types.RUN_STATUS.RUNNING) { return; }
                 try
                 {
                     string[] log = File.ReadAllLines(path);
                     foreach (var entry in log)
                     {
-                        // New log entries start with a timestamp like so:
-                        // Sep  7 02:16:16 testbed sudo: pam_unix(sudo:session):session opened for user root
-                        if (LogHeader.IsMatch(entry))
+                        if (RunStatus == Types.RUN_STATUS.RUNNING)
                         {
-                            var obj = new EventLogObject(entry)
+                            // New log entries start with a timestamp like so:
+                            // Sep  7 02:16:16 testbed sudo: pam_unix(sudo:session):session opened for user root
+                            if (LogHeader.IsMatch(entry))
                             {
-                                Summary = LogHeader.Matches(entry).Single().Groups[3].Captures[0].Value,
-                                Source = path,
-                                Process = LogHeader.Matches(entry).Single().Groups[2].Captures[0].Value,
-                            };
-                            if (DateTime.TryParse(LogHeader.Matches(entry).Single().Groups[1].Captures[0].Value, out DateTime Timestamp))
-                            {
-                                obj.Timestamp = Timestamp;
+                                var obj = new EventLogObject(entry)
+                                {
+                                    Summary = LogHeader.Matches(entry).Single().Groups[3].Captures[0].Value,
+                                    Source = path,
+                                    Process = LogHeader.Matches(entry).Single().Groups[2].Captures[0].Value,
+                                };
+                                if (DateTime.TryParse(LogHeader.Matches(entry).Single().Groups[1].Captures[0].Value, out DateTime Timestamp))
+                                {
+                                    obj.Timestamp = Timestamp;
+                                }
+                                Results.Push(obj);
                             }
-                            Results.Push(obj);
+                        }
+                        else
+                        {
+                            return;
                         }
                     }
                 }
@@ -177,36 +192,44 @@ namespace AttackSurfaceAnalyzer.Collectors
 
                 while (!process.StandardOutput.EndOfStream)
                 {
-                    var evt = process.StandardOutput.ReadLine();
-
-                    if (evt != null && MacLogHeader.IsMatch(evt))
+                    if (RunStatus == Types.RUN_STATUS.RUNNING)
                     {
-                        if (curObject != null)
-                        {
-                            Results.Push(curObject);
-                        }
+                        var evt = process.StandardOutput.ReadLine();
 
-                        curObject = new EventLogObject(evt)
+                        if (evt != null && MacLogHeader.IsMatch(evt))
                         {
-                            Level = MacLogHeader.Matches(evt).Single().Groups[2].Value,
-                            Summary = $"{MacLogHeader.Matches(evt).Single().Groups[4].Captures[0].Value}:{MacLogHeader.Matches(evt).Single().Groups[5].Captures[0].Value}",
-                            Source = MacLogHeader.Matches(evt).Single().Groups[4].Captures[0].Value,
-                        };
-                        if (DateTime.TryParse(MacLogHeader.Matches(evt).Single().Groups[1].Captures[0].Value, out DateTime Timestamp))
+                            if (curObject != null)
+                            {
+                                Results.Push(curObject);
+                            }
+
+                            curObject = new EventLogObject(evt)
+                            {
+                                Level = MacLogHeader.Matches(evt).Single().Groups[2].Value,
+                                Summary = $"{MacLogHeader.Matches(evt).Single().Groups[4].Captures[0].Value}:{MacLogHeader.Matches(evt).Single().Groups[5].Captures[0].Value}",
+                                Source = MacLogHeader.Matches(evt).Single().Groups[4].Captures[0].Value,
+                            };
+                            if (DateTime.TryParse(MacLogHeader.Matches(evt).Single().Groups[1].Captures[0].Value, out DateTime Timestamp))
+                            {
+                                curObject.Timestamp = Timestamp;
+                            }
+                        }
+                        else
                         {
-                            curObject.Timestamp = Timestamp;
+                            if (curObject != null)
+                            {
+                                if (curObject.Data == null)
+                                {
+                                    curObject.Data = new List<string>();
+                                }
+                                curObject.Data.Append(evt);
+                            }
                         }
                     }
                     else
                     {
-                        if (curObject != null)
-                        {
-                            if (curObject.Data == null)
-                            {
-                                curObject.Data = new List<string>();
-                            }
-                            curObject.Data.Append(evt);
-                        }
+                        process.Kill();
+                        return;
                     }
                 }
                 process.WaitForExit();

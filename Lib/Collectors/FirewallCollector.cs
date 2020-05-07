@@ -37,33 +37,40 @@ namespace AttackSurfaceAnalyzer.Collectors
             {
                 foreach (IFirewallRule rule in FirewallManager.Instance.Rules)
                 {
-                    try
+                    if (RunStatus == Types.RUN_STATUS.RUNNING)
                     {
-                        var obj = new FirewallObject(rule.Name)
+                        try
                         {
-                            Action = rule.Action,
-                            ApplicationName = rule.ApplicationName,
-                            Direction = rule.Direction,
-                            FriendlyName = rule.FriendlyName,
-                            IsEnable = rule.IsEnable,
-                            LocalPortType = rule.LocalPortType,
-                            Profiles = rule.Profiles,
-                            Protocol = rule.Protocol.ProtocolNumber.ToString(CultureInfo.InvariantCulture),
-                            Scope = rule.Scope,
-                            ServiceName = rule.ServiceName
-                        };
-                        obj.LocalAddresses = rule.LocalAddresses.ToList().ConvertAll(address => address.ToString());
-                        obj.LocalPorts = rule.LocalPorts.ToList().ConvertAll(port => port.ToString(CultureInfo.InvariantCulture));
-                        obj.RemoteAddresses = rule.RemoteAddresses.ToList().ConvertAll(address => address.ToString());
-                        obj.RemotePorts = rule.RemotePorts.ToList().ConvertAll(port => port.ToString(CultureInfo.InvariantCulture));
-                        Results.Push(obj);
+                            var obj = new FirewallObject(rule.Name)
+                            {
+                                Action = rule.Action,
+                                ApplicationName = rule.ApplicationName,
+                                Direction = rule.Direction,
+                                FriendlyName = rule.FriendlyName,
+                                IsEnable = rule.IsEnable,
+                                LocalPortType = rule.LocalPortType,
+                                Profiles = rule.Profiles,
+                                Protocol = rule.Protocol.ProtocolNumber.ToString(CultureInfo.InvariantCulture),
+                                Scope = rule.Scope,
+                                ServiceName = rule.ServiceName
+                            };
+                            obj.LocalAddresses = rule.LocalAddresses.ToList().ConvertAll(address => address.ToString());
+                            obj.LocalPorts = rule.LocalPorts.ToList().ConvertAll(port => port.ToString(CultureInfo.InvariantCulture));
+                            obj.RemoteAddresses = rule.RemoteAddresses.ToList().ConvertAll(address => address.ToString());
+                            obj.RemotePorts = rule.RemotePorts.ToList().ConvertAll(port => port.ToString(CultureInfo.InvariantCulture));
+                            Results.Push(obj);
+                        }
+                        catch (Exception e)
+                        {
+                            Log.Debug(e, "Exception hit while processing Firewall rules");
+                            Dictionary<string, string> ExceptionEvent = new Dictionary<string, string>();
+                            ExceptionEvent.Add("Exception Type", e.GetType().ToString());
+                            AsaTelemetry.TrackEvent("WindowsFirewallObjectCreationException", ExceptionEvent);
+                        }
                     }
-                    catch (Exception e)
+                    else
                     {
-                        Log.Debug(e, "Exception hit while processing Firewall rules");
-                        Dictionary<string, string> ExceptionEvent = new Dictionary<string, string>();
-                        ExceptionEvent.Add("Exception Type", e.GetType().ToString());
-                        AsaTelemetry.TrackEvent("WindowsFirewallObjectCreationException", ExceptionEvent);
+                        return;
                     }
                 }
             }
@@ -88,63 +95,70 @@ namespace AttackSurfaceAnalyzer.Collectors
 
                 foreach (var line in lines)
                 {
-                    if (line.StartsWith("-P"))
+                    if (RunStatus == Types.RUN_STATUS.RUNNING)
                     {
-                        var chainName = line.Split(' ')[1];
-                        defaultPolicies.Add(chainName, line.Contains("ACCEPT") ? FirewallAction.Allow : FirewallAction.Block);
-                        var obj = new FirewallObject($"Default {chainName} policy")
+                        if (line.StartsWith("-P"))
                         {
-                            Action = defaultPolicies[chainName],
-                            FriendlyName = $"Default {chainName} policy",
-                            Scope = FirewallScope.All
-                        };
-                        if (!chainName.Equals("FORWARD"))
-                        {
-                            obj.Direction = chainName.Equals("INPUT") ? FirewallDirection.Inbound : FirewallDirection.Outbound;
-                        }
+                            var chainName = line.Split(' ')[1];
+                            defaultPolicies.Add(chainName, line.Contains("ACCEPT") ? FirewallAction.Allow : FirewallAction.Block);
+                            var obj = new FirewallObject($"Default {chainName} policy")
+                            {
+                                Action = defaultPolicies[chainName],
+                                FriendlyName = $"Default {chainName} policy",
+                                Scope = FirewallScope.All
+                            };
+                            if (!chainName.Equals("FORWARD"))
+                            {
+                                obj.Direction = chainName.Equals("INPUT") ? FirewallDirection.Inbound : FirewallDirection.Outbound;
+                            }
 
-                        Results.Push(obj);
+                            Results.Push(obj);
+                        }
+                        else if (line.StartsWith("-A"))
+                        {
+                            var splits = line.Split(' ');
+                            var chainName = splits[1];
+
+
+                            var obj = new FirewallObject(line)
+                            {
+                                Action = (splits[Array.IndexOf(splits, "-j") + 1] == "ACCEPT") ? FirewallAction.Allow : FirewallAction.Block,
+                                FriendlyName = line,
+                                Scope = FirewallScope.All,
+                                Protocol = splits[Array.IndexOf(splits, "-p") + 1]
+                            };
+
+                            if (Array.IndexOf(splits, "--dport") > 0)
+                            {
+                                obj.RemotePorts = splits[Array.IndexOf(splits, "--dport") + 1].OfType<string>().ToList();
+                            }
+
+                            if (Array.IndexOf(splits, "-d") > 0)
+                            {
+                                obj.RemoteAddresses = splits[Array.IndexOf(splits, "-d") + 1].OfType<string>().ToList();
+                            }
+
+                            if (Array.IndexOf(splits, "-s") > 0)
+                            {
+                                obj.LocalAddresses = splits[Array.IndexOf(splits, "-s") + 1].OfType<string>().ToList();
+                            }
+
+                            if (Array.IndexOf(splits, "--sport") > 0)
+                            {
+                                obj.LocalPorts = splits[Array.IndexOf(splits, "--sport") + 1].OfType<string>().ToList();
+                            }
+
+                            if (!chainName.Equals("FORWARD"))
+                            {
+                                obj.Direction = chainName.Equals("INPUT") ? FirewallDirection.Inbound : FirewallDirection.Outbound;
+                            }
+
+                            Results.Push(obj);
+                        }
                     }
-                    else if (line.StartsWith("-A"))
+                        else
                     {
-                        var splits = line.Split(' ');
-                        var chainName = splits[1];
-
-
-                        var obj = new FirewallObject(line)
-                        {
-                            Action = (splits[Array.IndexOf(splits, "-j") + 1] == "ACCEPT") ? FirewallAction.Allow : FirewallAction.Block,
-                            FriendlyName = line,
-                            Scope = FirewallScope.All,
-                            Protocol = splits[Array.IndexOf(splits, "-p") + 1]
-                        };
-
-                        if (Array.IndexOf(splits, "--dport") > 0)
-                        {
-                            obj.RemotePorts = splits[Array.IndexOf(splits, "--dport") + 1].OfType<string>().ToList();
-                        }
-
-                        if (Array.IndexOf(splits, "-d") > 0)
-                        {
-                            obj.RemoteAddresses = splits[Array.IndexOf(splits, "-d") + 1].OfType<string>().ToList();
-                        }
-
-                        if (Array.IndexOf(splits, "-s") > 0)
-                        {
-                            obj.LocalAddresses = splits[Array.IndexOf(splits, "-s") + 1].OfType<string>().ToList();
-                        }
-
-                        if (Array.IndexOf(splits, "--sport") > 0)
-                        {
-                            obj.LocalPorts = splits[Array.IndexOf(splits, "--sport") + 1].OfType<string>().ToList();
-                        }
-
-                        if (!chainName.Equals("FORWARD"))
-                        {
-                            obj.Direction = chainName.Equals("INPUT") ? FirewallDirection.Inbound : FirewallDirection.Outbound;
-                        }
-
-                        Results.Push(obj);
+                        return;
                     }
                 }
             }
@@ -221,20 +235,27 @@ ALF: total number of apps = 2
                 lines = lines.Skip(2).ToList();
                 foreach (var line in lines)
                 {
-                    if (startsWithNumber.IsMatch(line))
+                    if (RunStatus == Types.RUN_STATUS.RUNNING)
                     {
-                        appName = line.Substring(line.IndexOf('/'));
-                    }
-                    else if (line.Contains("incoming connections"))
-                    {
-                        obj = new FirewallObject(appName)
+                        if (startsWithNumber.IsMatch(line))
                         {
-                            Action = (line.Contains("Allow")) ? FirewallAction.Allow : FirewallAction.Block,
-                            Direction = FirewallDirection.Inbound,
-                            FriendlyName = appName,
-                            Scope = FirewallScope.All
-                        };
-                        Results.Push(obj);
+                            appName = line.Substring(line.IndexOf('/'));
+                        }
+                        else if (line.Contains("incoming connections"))
+                        {
+                            obj = new FirewallObject(appName)
+                            {
+                                Action = (line.Contains("Allow")) ? FirewallAction.Allow : FirewallAction.Block,
+                                Direction = FirewallDirection.Inbound,
+                                FriendlyName = appName,
+                                Scope = FirewallScope.All
+                            };
+                            Results.Push(obj);
+                        }
+                    }
+                    else
+                    {
+                        return;
                     }
                 }
             }

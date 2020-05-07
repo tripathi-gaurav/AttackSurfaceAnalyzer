@@ -68,28 +68,42 @@ namespace AttackSurfaceAnalyzer.Collectors
 
             foreach (var endpoint in properties.GetActiveTcpListeners())
             {
-                var obj = new OpenPortObject(endpoint.Port, TRANSPORT.TCP, (ADDRESS_FAMILY)endpoint.AddressFamily)
+                if (RunStatus == RUN_STATUS.RUNNING)
                 {
-                    Address = endpoint.Address.ToString(),
-                };
-                foreach (ProcessPort p in Win32ProcessPorts.ProcessPortMap.FindAll(x => x.PortNumber == endpoint.Port))
-                {
-                    obj.ProcessName = p.ProcessName;
-                }
+                    var obj = new OpenPortObject(endpoint.Port, TRANSPORT.TCP, (ADDRESS_FAMILY)endpoint.AddressFamily)
+                    {
+                        Address = endpoint.Address.ToString(),
+                    };
+                    foreach (ProcessPort p in Win32ProcessPorts.ProcessPortMap.FindAll(x => x.PortNumber == endpoint.Port))
+                    {
+                        obj.ProcessName = p.ProcessName;
+                    }
 
-                Results.Push(obj);
+                    Results.Push(obj);
+                }
+                else
+                {
+                    return;
+                }
             }
 
             foreach (var endpoint in properties.GetActiveUdpListeners())
             {
-                var obj = new OpenPortObject(endpoint.Port, TRANSPORT.UDP, (ADDRESS_FAMILY)endpoint.AddressFamily)
+                if (RunStatus == RUN_STATUS.RUNNING)
                 {
-                    Address = endpoint.Address.ToString()
-                };
+                    var obj = new OpenPortObject(endpoint.Port, TRANSPORT.UDP, (ADDRESS_FAMILY)endpoint.AddressFamily)
+                    {
+                        Address = endpoint.Address.ToString()
+                    };
 
-                obj.ProcessName = Win32ProcessPorts.ProcessPortMap.Find(x => x.PortNumber == endpoint.Port)?.ProcessName;
+                    obj.ProcessName = Win32ProcessPorts.ProcessPortMap.Find(x => x.PortNumber == endpoint.Port)?.ProcessName;
 
-                Results.Push(obj);
+                    Results.Push(obj);
+                }
+                else
+                {
+                    return;
+                }
             }
         }
 
@@ -105,34 +119,41 @@ namespace AttackSurfaceAnalyzer.Collectors
 
                 foreach (var _line in result.Split('\n'))
                 {
-                    var line = _line;
-                    line = line.ToUpperInvariant();
-                    if (!line.Contains("LISTEN"))
+                    if (RunStatus == RUN_STATUS.RUNNING)
                     {
-                        continue;
-                    }
-                    var parts = Regex.Split(line, @"\s+");
-                    if (parts.Length < 5)
-                    {
-                        continue;       // Not long enough, must be an error
-                    }
-
-                    var addressMatches = Regex.Match(parts[4], @"^(.*):(\d+)$");
-                    if (addressMatches.Success)
-                    {
-                        var address = addressMatches.Groups[1].ToString();
-                        var port = addressMatches.Groups[2].ToString();
-                        if (int.TryParse(port, out int portInt))
+                        var line = _line;
+                        line = line.ToUpperInvariant();
+                        if (!line.Contains("LISTEN"))
                         {
-                            var transport = parts[0].ToUpperInvariant().Equals("TCP") ? TRANSPORT.TCP : TRANSPORT.UDP;
-                            var family = address.Contains('.') ? ADDRESS_FAMILY.InterNetwork : address.Contains(':') ? ADDRESS_FAMILY.InterNetworkV6 : ADDRESS_FAMILY.Unknown;
-                            var obj = new OpenPortObject(portInt, transport, family)
-                            {
-                                Address = address
-                            };
-                            Results.Push(obj);
+                            continue;
+                        }
+                        var parts = Regex.Split(line, @"\s+");
+                        if (parts.Length < 5)
+                        {
+                            continue;       // Not long enough, must be an error
                         }
 
+                        var addressMatches = Regex.Match(parts[4], @"^(.*):(\d+)$");
+                        if (addressMatches.Success)
+                        {
+                            var address = addressMatches.Groups[1].ToString();
+                            var port = addressMatches.Groups[2].ToString();
+                            if (int.TryParse(port, out int portInt))
+                            {
+                                var transport = parts[0].ToUpperInvariant().Equals("TCP") ? TRANSPORT.TCP : TRANSPORT.UDP;
+                                var family = address.Contains('.') ? ADDRESS_FAMILY.InterNetwork : address.Contains(':') ? ADDRESS_FAMILY.InterNetworkV6 : ADDRESS_FAMILY.Unknown;
+                                var obj = new OpenPortObject(portInt, transport, family)
+                                {
+                                    Address = address
+                                };
+                                Results.Push(obj);
+                            }
+
+                        }
+                    }
+                    else
+                    {
+                        return;
                     }
                 }
             }
@@ -141,7 +162,6 @@ namespace AttackSurfaceAnalyzer.Collectors
                 Log.Warning(Strings.Get("Err_Iproute2"));
                 Log.Debug(e, "");
             }
-
         }
 
         /// <summary>
@@ -156,48 +176,55 @@ namespace AttackSurfaceAnalyzer.Collectors
 
                 foreach (var _line in result.Split('\n'))
                 {
-                    var line = _line.ToUpperInvariant();
-                    if (!line.Contains("LISTEN"))
+                    if (RunStatus == RUN_STATUS.RUNNING)
                     {
-                        continue; // Skip any lines which aren't open listeners
-                    }
-                    var parts = Regex.Split(line, @"\s+");
-                    if (parts.Length <= 9)
-                    {
-                        continue; // Not long enough
-                    }
-
-                    var addressMatches = Regex.Match(parts[8], @"^(.*):(\d+)$");
-                    if (addressMatches.Success)
-                    {
-                        var address = addressMatches.Groups[1].ToString();
-                        var port = addressMatches.Groups[2].ToString();
-                        if (int.TryParse(port, out int portInt))
+                        var line = _line.ToUpperInvariant();
+                        if (!line.Contains("LISTEN"))
                         {
-                            var transport = parts[7].ToUpperInvariant().Equals("TCP") ? TRANSPORT.TCP : parts[7].ToUpperInvariant().Equals("TCP") ? TRANSPORT.UDP : TRANSPORT.UNKNOWN;
-                            var family = ADDRESS_FAMILY.Unknown;
-
-                            switch (parts[4])
-                            {
-                                case "IPv4":
-                                    family = ADDRESS_FAMILY.InterNetwork;
-                                    break;
-                                case "IPv6":
-                                    family = ADDRESS_FAMILY.InterNetworkV6;
-                                    break;
-                                default:
-                                    family = ADDRESS_FAMILY.Unknown;
-                                    break;
-                            }
-
-                            var obj = new OpenPortObject(portInt, transport, family)
-                            {
-                                Address = address,
-                                ProcessName = parts[0]
-                            };
-
-                            Results.Push(obj);
+                            continue; // Skip any lines which aren't open listeners
                         }
+                        var parts = Regex.Split(line, @"\s+");
+                        if (parts.Length <= 9)
+                        {
+                            continue; // Not long enough
+                        }
+
+                        var addressMatches = Regex.Match(parts[8], @"^(.*):(\d+)$");
+                        if (addressMatches.Success)
+                        {
+                            var address = addressMatches.Groups[1].ToString();
+                            var port = addressMatches.Groups[2].ToString();
+                            if (int.TryParse(port, out int portInt))
+                            {
+                                var transport = parts[7].ToUpperInvariant().Equals("TCP") ? TRANSPORT.TCP : parts[7].ToUpperInvariant().Equals("TCP") ? TRANSPORT.UDP : TRANSPORT.UNKNOWN;
+                                var family = ADDRESS_FAMILY.Unknown;
+
+                                switch (parts[4])
+                                {
+                                    case "IPv4":
+                                        family = ADDRESS_FAMILY.InterNetwork;
+                                        break;
+                                    case "IPv6":
+                                        family = ADDRESS_FAMILY.InterNetworkV6;
+                                        break;
+                                    default:
+                                        family = ADDRESS_FAMILY.Unknown;
+                                        break;
+                                }
+
+                                var obj = new OpenPortObject(portInt, transport, family)
+                                {
+                                    Address = address,
+                                    ProcessName = parts[0]
+                                };
+
+                                Results.Push(obj);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        return;
                     }
                 }
             }

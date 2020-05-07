@@ -1055,6 +1055,7 @@ namespace AttackSurfaceAnalyzer.Cli
             Console.CancelKeyPress += delegate
             {
                 Log.Information("Cancelling collection. Rolling back transaction. Please wait to avoid corrupting database.");
+                collectors.AsParallel().ForAll(x => x.Cancel());
                 DatabaseManager.CloseDatabase();
                 Environment.Exit(-1);
             };

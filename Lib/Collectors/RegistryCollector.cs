@@ -99,23 +99,51 @@ namespace AttackSurfaceAnalyzer.Collectors
                     x86_Enumerable.AsParallel().ForAll(
                     registryKey =>
                     {
-                        IterateOn(hive.Item1, registryKey, RegistryView.Registry32);
+                        if (RunStatus == Types.RUN_STATUS.RUNNING)
+                        {
+                            IterateOn(hive.Item1, registryKey, RegistryView.Registry32);
+                        }
+                        else
+                        {
+                            return;
+                        }
                     });
                     x64_Enumerable.AsParallel().ForAll(
                     registryKey =>
                     {
-                        IterateOn(hive.Item1, registryKey, RegistryView.Registry64);
+                        if (RunStatus == Types.RUN_STATUS.RUNNING)
+                        {
+                            IterateOn(hive.Item1, registryKey, RegistryView.Registry64);
+                        }
+                        else
+                        {
+                            return;
+                        }
                     });
                 }
                 else
                 {
                     foreach (var registryKey in x86_Enumerable)
                     {
-                        IterateOn(hive.Item1, registryKey, RegistryView.Registry32);
+                        if (RunStatus == Types.RUN_STATUS.RUNNING)
+                        {
+                            IterateOn(hive.Item1, registryKey, RegistryView.Registry32);
+                        }
+                        else
+                        {
+                            return;
+                        }
                     }
                     foreach (var registryKey in x64_Enumerable)
                     {
-                        IterateOn(hive.Item1, registryKey, RegistryView.Registry64);
+                        if (RunStatus == Types.RUN_STATUS.RUNNING)
+                        {
+                            IterateOn(hive.Item1, registryKey, RegistryView.Registry64);
+                        }
+                        else
+                        {
+                            return;
+                        }
                     }
                 }
                 Log.Debug("Finished {0}\\{1}", hive.Item1, hive.Item2);

@@ -6,8 +6,10 @@ using Microsoft.Win32;
 using Serilog;
 using System;
 using System.Collections.Generic;
+using System.DirectoryServices.Protocols;
 using System.IO;
 using System.Linq;
+using System.Management.Automation;
 using System.Runtime.InteropServices;
 
 namespace AttackSurfaceAnalyzer.Collectors
@@ -49,8 +51,8 @@ namespace AttackSurfaceAnalyzer.Collectors
             {
                 // Parse system Com Objects
                 using var SearchKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view);
-                var CLDIDs = SearchKey.OpenSubKey("SOFTWARE\\Classes\\CLSID");
-                foreach (var comObj in ParseComObjects(CLDIDs, view, opts.SingleThread))
+                var CLSIDS = SearchKey.OpenSubKey("SOFTWARE\\Classes\\CLSID");
+                foreach (var comObj in ParseComObjects(CLSIDS, view, opts.SingleThread))
                 {
                     Results.Push(comObj);
                 }
@@ -67,18 +69,15 @@ namespace AttackSurfaceAnalyzer.Collectors
             {
                 // Parse user Com Objects
                 using var SearchKey = RegistryKey.OpenBaseKey(RegistryHive.Users, view);
-                var subkeyNames = SearchKey.GetSubKeyNames();
-                foreach (string subkeyName in subkeyNames)
+                foreach (var userSubkey in SearchKey.GetSubKeyNames())
                 {
-                    if (subkeyName.EndsWith("Classes"))
+                    var ComKey = SearchKey.OpenSubKey($"{userSubkey}\\Software\\Classes\\CLSID");
+                    foreach (var comObj in ParseComObjects(ComKey, view, opts.SingleThread))
                     {
-                        using var ComKey = SearchKey.OpenSubKey(subkeyName).OpenSubKey("CLSID");
-                        foreach (var comObj in ParseComObjects(ComKey, view, opts.SingleThread))
-                        {
-                            Results.Push(comObj);
-                        }
+                        Results.Push(comObj);
                     }
                 }
+                
             }
             catch (Exception e) when (//lgtm [cs/empty-catch-block]
                 e is ArgumentException
@@ -94,7 +93,7 @@ namespace AttackSurfaceAnalyzer.Collectors
         /// </summary>
         /// <param name="SearchKey">The Registry Key to search</param>
         /// <param name="View">The View of the registry to use</param>
-        public static IEnumerable<CollectObject> ParseComObjects(RegistryKey SearchKey, RegistryView View, bool SingleThreaded = false)
+        public IEnumerable<CollectObject> ParseComObjects(RegistryKey SearchKey, RegistryView View, bool SingleThreaded = false)
         {
             if (SearchKey == null) { return new List<CollectObject>(); }
             List<ComObject> comObjects = new List<ComObject>();
@@ -188,12 +187,25 @@ namespace AttackSurfaceAnalyzer.Collectors
                 {
                     foreach (var subKey in SearchKey.GetSubKeyNames())
                     {
-                        ParseComObjectsIn(subKey);
+                        if (RunStatus == Types.RUN_STATUS.RUNNING)
+                        {
+                            ParseComObjectsIn(subKey);
+                        }
+                        else
+                        {
+                            return comObjects;
+                        }
                     }
                 }
                 else
                 {
-                    SearchKey.GetSubKeyNames().AsParallel().ForAll(subKey => ParseComObjectsIn(subKey));
+                    SearchKey.GetSubKeyNames().AsParallel().ForAll(subKey =>
+                    {
+                        if (RunStatus == Types.RUN_STATUS.RUNNING)
+                        {
+                            ParseComObjectsIn(subKey);
+                        }
+                    });
                 }
             }
             catch (Exception e)

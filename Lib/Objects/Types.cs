@@ -87,7 +87,8 @@ namespace AttackSurfaceAnalyzer.Types
         RUNNING,
         FAILED,
         COMPLETED,
-        NO_RESULTS
+        NO_RESULTS,
+        CANCELLED
     }
 
     /// <summary>

@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft Corporation. All rights reserved.
+﻿  // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 using AttackSurfaceAnalyzer.Objects;
 using AttackSurfaceAnalyzer.Utils;
@@ -141,14 +141,28 @@ namespace AttackSurfaceAnalyzer.Collectors
                 {
                     filePathEnumerable.AsParallel().ForAll(filePath =>
                     {
-                        IterateOn(filePath);
+                        if (RunStatus == Types.RUN_STATUS.RUNNING)
+                        {
+                            IterateOn(filePath);
+                        }
+                        else
+                        {
+                            return;
+                        }
                     });
                 }
                 else
                 {
                     foreach (var filePath in filePathEnumerable)
                     {
-                        IterateOn(filePath);
+                        if (RunStatus == Types.RUN_STATUS.RUNNING)
+                        {
+                            IterateOn(filePath);
+                        }
+                            else
+                        {
+                            return;
+                        }
                     }
                 }
             }
