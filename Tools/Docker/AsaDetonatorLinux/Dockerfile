@@ -1,11 +1,10 @@
-FROM ubuntu:latest 
+FROM mcr.microsoft.com/dotnet/core/sdk:3.1
 
 COPY Detonate.sh /Detonate.sh
 
-COPY publish /asa
+RUN dotnet tool install -g --add-source ../Path.To.nupkg Microsoft.CST.AttackSurfaceAnalyzer.CLI
 
-RUN chmod +x /Asa/Asa
-
+# Required for Port collector
 RUN apt-get update && apt-get install -y \
     coreutils \
     iproute2

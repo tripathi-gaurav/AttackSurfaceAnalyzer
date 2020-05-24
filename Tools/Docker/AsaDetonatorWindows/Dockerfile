@@ -1,11 +1,8 @@
 # escape=`
-FROM mcr.microsoft.com/windows:1903 
-
-SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
-RUN Set-ExecutionPolicy Bypass -Scope Process -Force; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
-
-COPY publish C:\asa
+FROM mcr.microsoft.com/windows:3.1-nanoserver-1909 
 
 COPY Detonate.ps1 C:\Detonate.ps1
+
+RUN dotnet tool install -g --add-source ../Path.To.nupkg Microsoft.CST.AttackSurfaceAnalyzer.CLI
 
 ENTRYPOINT ["powershell", "Set-ExecutionPolicy Bypass -Scope Process -Force; C:\\Detonate.ps1"]
