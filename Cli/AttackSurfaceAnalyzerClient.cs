@@ -6,6 +6,7 @@ using AttackSurfaceAnalyzer.Utils;
 using CommandLine;
 using Microsoft.AspNetCore;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.CST.LogicalAnalyzer;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Serialization;
@@ -30,6 +31,17 @@ namespace AttackSurfaceAnalyzer.Cli
         private static List<BaseCollector> collectors = new List<BaseCollector>();
         private static readonly List<BaseMonitor> monitors = new List<BaseMonitor>();
         private static List<BaseCompare> comparators = new List<BaseCompare>();
+
+        public static DatabaseManager DatabaseManager { get; private set; }
+
+        private static void SetupLogging(CommandOptions opts)
+        {
+#if DEBUG
+            Logger.Setup(true, opts.Verbose, opts.Quiet);
+#else
+            Logger.Setup(opts.Debug, opts.Verbose, opts.Quiet);
+#endif
+        }
 
         private static void SetupDatabase(CommandOptions opts)
         {
@@ -61,67 +73,223 @@ namespace AttackSurfaceAnalyzer.Cli
                 .MapResult(
                     (CollectCommandOptions opts) =>
                     {
+                        SetupLogging(opts);
                         SetupDatabase(opts);
+                        CheckFirstRun();
+                        AsaTelemetry.SetEnabled(DatabaseManager.GetTelemetryEnabled());
                         return RunCollectCommand(opts);
                     },
                     (MonitorCommandOptions opts) =>
                     {
+                        SetupLogging(opts);
                         SetupDatabase(opts);
+                        CheckFirstRun();
+                        AsaTelemetry.SetEnabled(DatabaseManager.GetTelemetryEnabled());
                         return RunMonitorCommand(opts);
                     },
                     (ExportCollectCommandOptions opts) =>
                     {
+                        SetupLogging(opts);
                         SetupDatabase(opts);
+                        CheckFirstRun();
+                        AsaTelemetry.SetEnabled(DatabaseManager.GetTelemetryEnabled());
                         return RunExportCollectCommand(opts);
                     },
                     (ExportMonitorCommandOptions opts) =>
                     {
+                        SetupLogging(opts);
                         SetupDatabase(opts);
+                        CheckFirstRun();
+                        AsaTelemetry.SetEnabled(DatabaseManager.GetTelemetryEnabled());
                         return RunExportMonitorCommand(opts);
                     },
                     (ConfigCommandOptions opts) =>
                     {
+                        SetupLogging(opts);
                         return RunConfigCommand(opts);
                     },
                     (GuiCommandOptions opts) =>
                     {
+                        SetupLogging(opts);
                         SetupDatabase(opts);
+                        CheckFirstRun();
+                        AsaTelemetry.SetEnabled(DatabaseManager.GetTelemetryEnabled());
                         return RunGuiCommand(opts);
                     },
                     (VerifyOptions opts) =>
                     {
+                        SetupLogging(opts);
                         SetupDatabase(opts);
+                        CheckFirstRun();
+                        AsaTelemetry.SetEnabled(DatabaseManager.GetTelemetryEnabled());
                         return RunVerifyRulesCommand(opts);
                     },
-                    errs => 1
+                    (GuidedModeCommandOptions opts) =>
+                    {
+                        SetupLogging(opts);
+                        SetupDatabase(opts);
+                        CheckFirstRun();
+                        AsaTelemetry.SetEnabled(DatabaseManager.GetTelemetryEnabled());
+                        return RunGuidedModeCommand(opts);
+                    },
+                    errs => ASA_ERROR.UNKNOWN
                 );
-            DatabaseManager.CloseDatabase();
+            DatabaseManager?.CloseDatabase();
             Log.CloseAndFlush();
-            Environment.Exit(argsResult);
+            Environment.Exit((int)argsResult);
         }
 
-        private static int RunVerifyRulesCommand(VerifyOptions opts)
+        private static ASA_ERROR RunGuidedModeCommand(GuidedModeCommandOptions opts)
         {
-#if DEBUG
-            Logger.Setup(true, opts.Verbose, opts.Quiet);
-#else
-            Logger.Setup(opts.Debug, opts.Verbose, opts.Quiet);
-#endif
-            var analyzer = new Analyzer(AsaHelpers.GetPlatform(), opts.AnalysisFile);
-            var violations = analyzer.VerifyRules();
+            opts.RunId = opts.RunId?.Trim() ?? DateTime.Now.ToString("o", CultureInfo.InvariantCulture);
+
+            var firstCollectRunId = $"{opts.RunId}-baseline";
+            var secondCollectRunId = $"{opts.RunId}-after";
+            var monitorRunId = $"{opts.RunId}-monitoring";
+
+            var collectorOpts = CollectCommandOptions.FromCollectorOptions(opts);
+
+            collectorOpts.RunId = firstCollectRunId;
+
+            RunCollectCommand(collectorOpts);
+
+            var monitorOpts = new MonitorCommandOptions()
+            {
+                Duration = opts.Duration,
+                MonitoredDirectories = opts.MonitoredDirectories,
+                EnableFileSystemMonitor = opts.EnableFileSystemMonitor,
+                GatherHashes = opts.GatherHashes,
+                FileNamesOnly = opts.FileNamesOnly,
+                RunId = monitorRunId,
+            };
+
+            RunMonitorCommand(monitorOpts);
+
+            collectorOpts.RunId = secondCollectRunId;
+
+            RunCollectCommand(collectorOpts);
+
+            var compareOpts = new CompareCommandOptions(firstCollectRunId, secondCollectRunId)
+            {
+                DisableAnalysis = opts.DisableAnalysis,
+                AnalysesFile = opts.AnalysesFile
+            };
+
+            var results = CompareRuns(compareOpts);
+
+            if (opts.SaveToDatabase)
+            {
+                InsertCompareResults(results, firstCollectRunId, secondCollectRunId);
+            }
+
+            var monitorCompareOpts = new CompareCommandOptions(null, monitorRunId)
+            {
+                DisableAnalysis = opts.DisableAnalysis,
+                AnalysesFile = opts.AnalysesFile,
+                ApplySubObjectRulesToMonitor = opts.ApplySubObjectRulesToMonitor,
+            };
+
+            var monitorResult = AnalyzeMonitored(monitorCompareOpts);
+
+            if (opts.SaveToDatabase)
+            {
+                InsertCompareResults(monitorResult, null, monitorRunId);
+            }
+
+            Parallel.ForEach(monitorResult.Keys, key =>
+            {
+                results.TryAdd(key, monitorResult[key]);
+            });
+
+            return ExportGuidedModeResults(results, opts);
+        }
+
+        public static ConcurrentDictionary<(RESULT_TYPE, CHANGE_TYPE), List<CompareResult>> AnalyzeMonitored(CompareCommandOptions opts)
+        {
+            if (opts is null) { return new ConcurrentDictionary<(RESULT_TYPE, CHANGE_TYPE), List<CompareResult>>(); }
+            var analyzer = new AsaAnalyzer();
+            var ruleFile = string.IsNullOrEmpty(opts.AnalysesFile) ? RuleFile.LoadEmbeddedFilters() : RuleFile.FromFile(opts.AnalysesFile);
+            return AnalyzeMonitored(opts, analyzer, DatabaseManager.GetMonitorResults(opts.SecondRunId), ruleFile);
+        }
+
+        public static ConcurrentDictionary<(RESULT_TYPE, CHANGE_TYPE), List<CompareResult>> AnalyzeMonitored(CompareCommandOptions opts, AsaAnalyzer analyzer, IEnumerable<MonitorObject> collectObjects, RuleFile ruleFile)
+        {
+            if (opts is null) { return new ConcurrentDictionary<(RESULT_TYPE, CHANGE_TYPE), List<CompareResult>>(); }
+            var results = new ConcurrentDictionary<(RESULT_TYPE, CHANGE_TYPE), List<CompareResult>>();
+            Parallel.ForEach(collectObjects, monitorResult =>
+            {
+                var shellResult = new CompareResult()
+                {
+                    Compare = monitorResult,
+                    CompareRunId = opts.SecondRunId
+                };
+
+                shellResult.Rules = analyzer.Analyze(ruleFile.AsaRules,shellResult).ToList();
+
+                if (opts.ApplySubObjectRulesToMonitor)
+                {
+                    switch (monitorResult)
+                    {
+                        case FileMonitorObject fmo:
+                            var innerShell = new CompareResult()
+                            {
+                                Compare = fmo.FileSystemObject,
+                                CompareRunId = opts.SecondRunId
+                            };
+                            shellResult.Rules.AddRange(analyzer.Analyze(ruleFile.AsaRules, innerShell));
+                            break;
+                    }
+                }
+
+                shellResult.Analysis = shellResult.Rules.Count > 0 ? shellResult.Rules.Max(x => ((AsaRule)x).Flag) : ruleFile.DefaultLevels[shellResult.ResultType];
+
+                results.TryAdd((monitorResult.ResultType, monitorResult.ChangeType), new List<CompareResult>());
+                results[(monitorResult.ResultType, monitorResult.ChangeType)].Add(shellResult);
+            });
+            return results;
+        }
+
+        private static ASA_ERROR RunVerifyRulesCommand(VerifyOptions opts)
+        {
+
+            var analyzer = new AsaAnalyzer();
+            var ruleFile = string.IsNullOrEmpty(opts.AnalysisFile) ? RuleFile.LoadEmbeddedFilters() : RuleFile.FromFile(opts.AnalysisFile);
+            var violations = analyzer.EnumerateRuleIssues(ruleFile.GetRules());
             Analyzer.PrintViolations(violations);
             if (violations.Any())
             {
-                Log.Error("Encountered {0} issues with rules at {1}", violations.Count, opts.AnalysisFile ?? "Embedded");
-                return (int)ASA_ERROR.INVALID_RULES;
+                Log.Error("Encountered {0} issues with rules at {1}", violations.Count(), opts.AnalysisFile ?? "Embedded");
+                return ASA_ERROR.INVALID_RULES;
             }
-            Log.Information("Rules successfully verified. ✅");
-            return (int)ASA_ERROR.NONE;
+            Log.Information("{0} Rules successfully verified. ✅", ruleFile.AsaRules.Count());
+            return ASA_ERROR.NONE;
+        }
+
+        internal static void InsertCompareResults(ConcurrentDictionary<(RESULT_TYPE, CHANGE_TYPE), List<CompareResult>> results, string? FirstRunId, string SecondRunId)
+        {
+            DatabaseManager.InsertCompareRun(FirstRunId, SecondRunId, RUN_STATUS.RUNNING);
+            foreach (var key in results.Keys)
+            {
+                if (results.TryGetValue(key, out List<CompareResult>? obj))
+                {
+                    if (obj is List<CompareResult> Queue)
+                    {
+                        foreach (var result in Queue)
+                        {
+                            DatabaseManager.InsertAnalyzed(result);
+                        }
+                    }
+                }
+            }
+            DatabaseManager.UpdateCompareRun(FirstRunId, SecondRunId, RUN_STATUS.COMPLETED);
+
+            DatabaseManager.Commit();
         }
 
         private static void SetupOrDie(string path, DBSettings? dbSettingsIn = null)
         {
-            var errorCode = DatabaseManager.Setup(path, dbSettingsIn);
+            DatabaseManager = new SqliteDatabaseManager(path, dbSettingsIn);
+            var errorCode = DatabaseManager.Setup();
 
             if (errorCode != ASA_ERROR.NONE)
             {
@@ -130,14 +298,8 @@ namespace AttackSurfaceAnalyzer.Cli
             }
         }
 
-        private static int RunGuiCommand(GuiCommandOptions opts)
+        private static ASA_ERROR RunGuiCommand(GuiCommandOptions opts)
         {
-#if DEBUG
-            Logger.Setup(true, opts.Verbose, opts.Quiet);
-#else
-            Logger.Setup(opts.Debug, opts.Verbose, opts.Quiet);
-#endif
-            AsaTelemetry.Setup();
 
             var server = WebHost.CreateDefaultBuilder(Array.Empty<string>())
                     .UseStartup<Startup>()
@@ -164,10 +326,8 @@ namespace AttackSurfaceAnalyzer.Cli
 
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2241:Provide correct arguments to formatting methods", Justification = "<Pending>")]
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Globalization", "CA1305:Specify IFormatProvider", Justification = "<Pending>")]
-        private static int RunConfigCommand(ConfigCommandOptions opts)
+        private static ASA_ERROR RunConfigCommand(ConfigCommandOptions opts)
         {
-            AsaTelemetry.Setup();
-
             if (opts.ResetDatabase)
             {
                 var filename = opts.DatabaseFilename;
@@ -176,9 +336,8 @@ namespace AttackSurfaceAnalyzer.Cli
             }
             else
             {
-                CheckFirstRun();
-
                 SetupDatabase(opts);
+                CheckFirstRun();
 
                 if (opts.ListRuns)
                 {
@@ -254,25 +413,16 @@ namespace AttackSurfaceAnalyzer.Cli
                     DatabaseManager.TrimToLatest();
                 }
             }
-            return 0;
+            return ASA_ERROR.NONE;
         }
 
-        private static int RunExportCollectCommand(ExportCollectCommandOptions opts)
+        private static ASA_ERROR RunExportCollectCommand(ExportCollectCommandOptions opts)
         {
-#if DEBUG
-            Logger.Setup(true, opts.Verbose, opts.Quiet);
-#else
-            Logger.Setup(opts.Debug, opts.Verbose, opts.Quiet);
-#endif
-
             if (opts.OutputPath != null && !Directory.Exists(opts.OutputPath))
             {
                 Log.Fatal(Strings.Get("Err_OutputPathNotExist"), opts.OutputPath);
                 return 0;
             }
-
-            CheckFirstRun();
-            AsaTelemetry.Setup();
 
             if (opts.ExportSingleRun)
             {
@@ -283,7 +433,7 @@ namespace AttackSurfaceAnalyzer.Cli
                     if (runIds.Count < 1)
                     {
                         Log.Fatal(Strings.Get("Err_CouldntDetermineOneRun"));
-                        System.Environment.Exit(-1);
+                        return ASA_ERROR.INVALID_ID;
                     }
                     else
                     {
@@ -321,11 +471,27 @@ namespace AttackSurfaceAnalyzer.Cli
             {
                 DatabaseFilename = opts.DatabaseFilename,
                 AnalysesFile = opts.AnalysesFile,
-                Analyze = opts.Analyze,
+                DisableAnalysis = opts.DisableAnalysis,
                 SaveToDatabase = opts.SaveToDatabase
             };
 
-            var results = CompareRuns(options).Select(x => new KeyValuePair<string, object>($"{x.Key.Item1}_{x.Key.Item2}", x.Value)).ToDictionary(x => x.Key, x => x.Value);
+            var results = CompareRuns(options);
+
+            if (opts.SaveToDatabase)
+            {
+                InsertCompareResults(results, opts.FirstRunId, opts.SecondRunId);
+            }
+
+            return ExportCompareResults(results, opts, AsaHelpers.MakeValidFileName(opts.FirstRunId + "_vs_" + opts.SecondRunId));
+        }
+
+        private static ASA_ERROR ExportGuidedModeResults(ConcurrentDictionary<(RESULT_TYPE, CHANGE_TYPE), List<CompareResult>> resultsIn, GuidedModeCommandOptions opts)
+        {
+            if (opts.RunId == null)
+            {
+                return ASA_ERROR.INVALID_ID;
+            }
+            var results = resultsIn.Select(x => new KeyValuePair<string, object>($"{x.Key.Item1}_{x.Key.Item2}", x.Value)).ToDictionary(x => x.Key, x => x.Value);
             JsonSerializer serializer = JsonSerializer.Create(new JsonSerializerSettings()
             {
                 Formatting = Formatting.Indented,
@@ -343,7 +509,7 @@ namespace AttackSurfaceAnalyzer.Cli
             {
                 results.Add("metadata", AsaHelpers.GenerateMetadata());
 
-                string path = Path.Combine(outputPath, AsaHelpers.MakeValidFileName(opts.FirstRunId + "_vs_" + opts.SecondRunId));
+                string path = Path.Combine(outputPath, AsaHelpers.MakeValidFileName(opts.RunId));
                 Directory.CreateDirectory(path);
                 foreach (var key in results.Keys)
                 {
@@ -360,7 +526,7 @@ namespace AttackSurfaceAnalyzer.Cli
             }
             else
             {
-                string path = Path.Combine(outputPath, AsaHelpers.MakeValidFileName(opts.FirstRunId + "_vs_" + opts.SecondRunId + "_summary.json.txt"));
+                string path = Path.Combine(outputPath, AsaHelpers.MakeValidFileName(opts.RunId + "_summary.json.txt"));
                 var output = new Dictionary<string, object>();
                 output["results"] = results;
                 output["metadata"] = AsaHelpers.GenerateMetadata();
@@ -373,7 +539,60 @@ namespace AttackSurfaceAnalyzer.Cli
                 }
                 Log.Information(Strings.Get("OutputWrittenTo"), (new FileInfo(path)).FullName);
             }
-            return 0;
+            return ASA_ERROR.NONE;
+        }
+
+        private static ASA_ERROR ExportCompareResults(ConcurrentDictionary<(RESULT_TYPE, CHANGE_TYPE), List<CompareResult>> resultsIn, ExportOptions opts, string baseFileName)
+        {
+            var results = resultsIn.Select(x => new KeyValuePair<string, object>($"{x.Key.Item1}_{x.Key.Item2}", x.Value)).ToDictionary(x => x.Key, x => x.Value);
+            JsonSerializer serializer = JsonSerializer.Create(new JsonSerializerSettings()
+            {
+                Formatting = Formatting.Indented,
+                NullValueHandling = NullValueHandling.Ignore,
+                DefaultValueHandling = DefaultValueHandling.Ignore,
+                Converters = new List<JsonConverter>() { new StringEnumConverter() },
+                ContractResolver = new AsaExportContractResolver()
+            });
+            var outputPath = opts.OutputPath;
+            if (outputPath is null)
+            {
+                outputPath = Directory.GetCurrentDirectory();
+            }
+            if (opts.ExplodedOutput)
+            {
+                results.Add("metadata", AsaHelpers.GenerateMetadata());
+
+                string path = Path.Combine(outputPath, AsaHelpers.MakeValidFileName(baseFileName));
+                Directory.CreateDirectory(path);
+                foreach (var key in results.Keys)
+                {
+                    string filePath = Path.Combine(path, AsaHelpers.MakeValidFileName(key));
+                    using (StreamWriter sw = new StreamWriter(filePath)) //lgtm[cs/path-injection]
+                    {
+                        using (JsonWriter writer = new JsonTextWriter(sw))
+                        {
+                            serializer.Serialize(writer, results[key]);
+                        }
+                    }
+                }
+                Log.Information(Strings.Get("OutputWrittenTo"), (new DirectoryInfo(path)).FullName);
+            }
+            else
+            {
+                string path = Path.Combine(outputPath, AsaHelpers.MakeValidFileName(baseFileName+"_summary.json.txt"));
+                var output = new Dictionary<string, object>();
+                output["results"] = results;
+                output["metadata"] = AsaHelpers.GenerateMetadata();
+                using (StreamWriter sw = new StreamWriter(path)) //lgtm[cs/path-injection]
+                {
+                    using (JsonWriter writer = new JsonTextWriter(sw))
+                    {
+                        serializer.Serialize(writer, output);
+                    }
+                }
+                Log.Information(Strings.Get("OutputWrittenTo"), (new FileInfo(path)).FullName);
+            }
+            return ASA_ERROR.NONE;
         }
 
         private class AsaExportContractResolver : DefaultContractResolver
@@ -460,7 +679,7 @@ namespace AttackSurfaceAnalyzer.Cli
 
         private static void CheckFirstRun()
         {
-            if (DatabaseManager.FirstRun)
+            if (DatabaseManager == null || DatabaseManager.FirstRun)
             {
                 string exeStr = $"config --telemetry-opt-out";
                 Log.Information(Strings.Get("ApplicationHasTelemetry"));
@@ -469,48 +688,37 @@ namespace AttackSurfaceAnalyzer.Cli
             }
         }
 
-        private static int RunExportMonitorCommand(ExportMonitorCommandOptions opts)
+        private static ASA_ERROR RunExportMonitorCommand(ExportMonitorCommandOptions opts)
         {
-#if DEBUG
-            Logger.Setup(true, opts.Verbose);
-#else
-            Logger.Setup(opts.Debug, opts.Verbose);
-#endif
-            var outPath = opts.OutputPath ?? Directory.GetCurrentDirectory();
-            if (!Directory.Exists(outPath))
-            {
-                Log.Fatal(Strings.Get("Err_OutputPathNotExist"), opts.OutputPath);
-                return 0;
-            }
-
-            CheckFirstRun();
-            AsaTelemetry.Setup();
-
             if (opts.RunId is null)
             {
-                List<string> runIds = DatabaseManager.GetLatestRunIds(1, RUN_TYPE.MONITOR);
-
-                if (runIds.Count < 1)
-                {
-                    Log.Fatal(Strings.Get("Err_CouldntDetermineOneRun"));
-                    System.Environment.Exit(-1);
-                }
-                else
+                var runIds = DatabaseManager.GetLatestRunIds(1, RUN_TYPE.MONITOR);
+                if (runIds.Any())
                 {
                     opts.RunId = runIds.First();
                 }
+                else
+                {
+                    Log.Fatal(Strings.Get("Err_CouldntDetermineOneRun"));
+                    return ASA_ERROR.INVALID_ID;
+                }
+            }
+            var monitorCompareOpts = new CompareCommandOptions(null, opts.RunId)
+            {
+                DisableAnalysis = opts.DisableAnalysis,
+                AnalysesFile = opts.AnalysesFile,
+                ApplySubObjectRulesToMonitor = opts.ApplySubObjectRulesToMonitor,
+            };
+
+            var monitorResult = AnalyzeMonitored(monitorCompareOpts);
+
+            if (opts.SaveToDatabase)
+            {
+                InsertCompareResults(monitorResult, null, opts.RunId);
             }
 
-            Log.Information("{0} {1}", Strings.Get("Exporting"), opts.RunId);
-
-            Dictionary<string, string> StartEvent = new Dictionary<string, string>();
-            StartEvent.Add("OutputPathSet", (opts.OutputPath != null).ToString(CultureInfo.InvariantCulture));
-
-            AsaTelemetry.TrackEvent("Begin Export Monitor", StartEvent);
-
-            WriteMonitorJson(opts.RunId, (int)RESULT_TYPE.FILE, opts.OutputPath ?? "monitor.json");
-
-            return 0;
+            return ExportCompareResults(monitorResult, opts, AsaHelpers.MakeValidFileName(opts.RunId));
+            
         }
 
         public static void WriteMonitorJson(string RunId, int ResultType, string OutputPath)
@@ -541,23 +749,12 @@ namespace AttackSurfaceAnalyzer.Cli
             Log.Information(Strings.Get("OutputWrittenTo"), (new FileInfo(path)).FullName);
         }
 
-        private static int RunMonitorCommand(MonitorCommandOptions opts)
+        private static ASA_ERROR RunMonitorCommand(MonitorCommandOptions opts)
         {
-#if DEBUG
-            Logger.Setup(true, opts.Verbose);
-#else
-            Logger.Setup(opts.Debug, opts.Verbose);
-#endif
-            AdminOrQuit();
-
-            AsaTelemetry.Setup();
-
             Dictionary<string, string> StartEvent = new Dictionary<string, string>();
             StartEvent.Add("Files", opts.EnableFileSystemMonitor.ToString(CultureInfo.InvariantCulture));
             StartEvent.Add("Admin", AsaHelpers.IsAdmin().ToString(CultureInfo.InvariantCulture));
             AsaTelemetry.TrackEvent("Begin monitoring", StartEvent);
-
-            CheckFirstRun();
 
             if (opts.RunId is string)
             {
@@ -577,30 +774,24 @@ namespace AttackSurfaceAnalyzer.Cli
                 if (DatabaseManager.GetRun(opts.RunId) != null)
                 {
                     Log.Error(Strings.Get("Err_RunIdAlreadyUsed"));
-                    return (int)ASA_ERROR.UNIQUE_ID;
+                    return ASA_ERROR.UNIQUE_ID;
                 }
             }
             var run = new AsaRun(RunId: opts.RunId, Timestamp: DateTime.Now, Version: AsaHelpers.GetVersionString(), Platform: AsaHelpers.GetPlatform(), new List<RESULT_TYPE>() { RESULT_TYPE.FILEMONITOR }, RUN_TYPE.MONITOR);
 
             DatabaseManager.InsertRun(run);
 
-            int returnValue = 0;
+            var returnValue = ASA_ERROR.NONE;
 
             if (opts.EnableFileSystemMonitor)
             {
-                monitors.Add(new FileSystemMonitor(opts, x => DatabaseManager.WriteFileMonitor(x, opts.RunId)));
+                monitors.Add(new FileSystemMonitor(opts, x => DatabaseManager.Write(x, opts.RunId)));
             }
-
-            //if (opts.EnableRegistryMonitor)
-            //{
-            //var monitor = new RegistryMonitor();
-            //monitors.Add(monitor);
-            //}
 
             if (monitors.Count == 0)
             {
                 Log.Warning(Strings.Get("Err_NoMonitors"));
-                returnValue = (int)ASA_ERROR.NO_COLLECTORS;
+                returnValue = ASA_ERROR.NO_COLLECTORS;
             }
 
             using var exitEvent = new ManualResetEvent(false);
@@ -631,16 +822,17 @@ namespace AttackSurfaceAnalyzer.Cli
                 catch (Exception ex)
                 {
                     Log.Error(Strings.Get("Err_CollectingFrom"), c.GetType().Name, ex.Message, ex.StackTrace);
-                    returnValue = 1;
+                    returnValue = ASA_ERROR.UNKNOWN;
                 }
             }
 
-            // Set up the event to capture CTRL+C
-            Console.CancelKeyPress += (sender, eventArgs) =>
-            {
-                eventArgs.Cancel = true;
+            void consoleCancelDelegate(object sender, ConsoleCancelEventArgs args)
+            { 
+                args.Cancel = true;
                 exitEvent.Set();
             };
+            // Set up the event to capture CTRL+C
+            Console.CancelKeyPress += consoleCancelDelegate;
 
             Console.Write(Strings.Get("MonitoringPressC"));
 
@@ -670,6 +862,8 @@ namespace AttackSurfaceAnalyzer.Cli
 
             DatabaseManager.Commit();
 
+            Console.CancelKeyPress -= consoleCancelDelegate;
+
             return returnValue;
         }
 
@@ -695,17 +889,12 @@ namespace AttackSurfaceAnalyzer.Cli
                 throw new ArgumentNullException(nameof(opts));
             }
 
-            if (opts.SaveToDatabase)
-            {
-                DatabaseManager.InsertCompareRun(opts.FirstRunId, opts.SecondRunId, RUN_STATUS.RUNNING);
-            }
-
             comparators = new List<BaseCompare>();
 
             Dictionary<string, string> EndEvent = new Dictionary<string, string>();
             BaseCompare c = new BaseCompare();
             var watch = System.Diagnostics.Stopwatch.StartNew();
-            if (!c.TryCompare(opts.FirstRunId, opts.SecondRunId))
+            if (!c.TryCompare(opts.FirstRunId, opts.SecondRunId, DatabaseManager))
             {
                 Log.Warning(Strings.Get("Err_Comparing") + " : {0}", c.GetType().Name);
             }
@@ -720,16 +909,17 @@ namespace AttackSurfaceAnalyzer.Cli
 
             Log.Information(Strings.Get("Completed"), "Comparing", answer);
 
-            if (opts.Analyze)
+            if (!opts.DisableAnalysis)
             {
                 watch = Stopwatch.StartNew();
-                Analyzer analyzer = new Analyzer(DatabaseManager.RunIdToPlatform(opts.SecondRunId), opts.AnalysesFile);
-
-                var violations = analyzer.VerifyRules();
+                var ruleFile = string.IsNullOrEmpty(opts.AnalysesFile) ? RuleFile.LoadEmbeddedFilters() : RuleFile.FromFile(opts.AnalysesFile);
+                Analyzer analyzer = new AsaAnalyzer();
+                var platform = DatabaseManager.RunIdToPlatform(opts.SecondRunId);
+                var violations = analyzer.EnumerateRuleIssues(ruleFile.GetRules());
                 Analyzer.PrintViolations(violations);
                 if (violations.Any())
                 {
-                    Log.Error("Encountered {0} issues with rules in {1}. Skipping analysis.", violations.Count, opts.AnalysesFile ?? "Embedded");
+                    Log.Error("Encountered {0} issues with rules in {1}. Skipping analysis.", violations.Count(), opts.AnalysesFile ?? "Embedded");
                 }
                 else
                 {
@@ -741,8 +931,15 @@ namespace AttackSurfaceAnalyzer.Cli
                             {
                                 queue.AsParallel().ForAll(res =>
                                 {
-                                    res.Rules = analyzer.Analyze(res);
-                                    res.Analysis = res.Rules.Count > 0 ? res.Rules.Max(x => x.Flag) : analyzer.DefaultLevels[res.ResultType];
+                                    // Select rules with the appropriate change type, platform and target
+                                    // - Target is also checked inside Analyze, but this shortcuts repeatedly checking rules which don't apply
+                                    var selectedRules = ruleFile.AsaRules.Where((rule) =>
+                                        (rule.ChangeTypes == null || rule.ChangeTypes.Contains(res.ChangeType))
+                                            && (rule.Platforms == null || rule.Platforms.Contains(platform))
+                                            && (rule.ResultType == res.ResultType));
+                                    res.Rules = analyzer.Analyze(selectedRules, res.Base, res.Compare).ToList();
+                                    res.Analysis = res.Rules.Count
+                                                   > 0 ? res.Rules.Max(x => ((AsaRule)x).Flag) : ruleFile.DefaultLevels[res.ResultType];
                                 });
                             }
                         }
@@ -759,40 +956,6 @@ namespace AttackSurfaceAnalyzer.Cli
                 Log.Information(Strings.Get("Completed"), "Analysis", answer);
             }
 
-            watch = Stopwatch.StartNew();
-
-            if (opts.SaveToDatabase)
-            {
-                foreach (var key in c.Results.Keys)
-                {
-                    if (c.Results.TryGetValue(key, out List<CompareResult>? obj))
-                    {
-                        if (obj is List<CompareResult> Queue)
-                        {
-                            foreach (var result in Queue)
-                            {
-                                DatabaseManager.InsertAnalyzed(result);
-                            }
-                        }
-                    }
-                }
-            }
-
-            watch.Stop();
-            t = TimeSpan.FromMilliseconds(watch.ElapsedMilliseconds);
-            answer = string.Format(CultureInfo.InvariantCulture, "{0:D2}h:{1:D2}m:{2:D2}s:{3:D3}ms",
-                                    t.Hours,
-                                    t.Minutes,
-                                    t.Seconds,
-                                    t.Milliseconds);
-            Log.Information(Strings.Get("Completed"), "Flushing", answer);
-
-            if (opts.SaveToDatabase)
-            {
-                DatabaseManager.UpdateCompareRun(opts.FirstRunId, opts.SecondRunId, RUN_STATUS.COMPLETED);
-            }
-
-            DatabaseManager.Commit();
             AsaTelemetry.TrackEvent("End Command", EndEvent);
             return c.Results;
         }
@@ -837,7 +1000,7 @@ namespace AttackSurfaceAnalyzer.Cli
             return 0;
         }
 
-        public static void AdminOrQuit()
+        public static void AdminOrWarn()
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
@@ -862,19 +1025,10 @@ namespace AttackSurfaceAnalyzer.Cli
             }
         }
 
-        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Acceptable tradeoff with telemetry (to identify issues) to lessen severity of individual collector crashes.")]
-        public static int RunCollectCommand(CollectCommandOptions opts)
+        public static ASA_ERROR RunCollectCommand(CollectCommandOptions opts)
         {
-            if (opts == null) { return -1; }
-#if DEBUG
-            Logger.Setup(true, opts.Verbose, opts.Quiet);
-#else
-                Logger.Setup(opts.Debug, opts.Verbose, opts.Quiet);
-#endif
-
+            if (opts == null) { return ASA_ERROR.NO_COLLECTORS; }
             collectors.Clear();
-
-            AsaTelemetry.Setup();
 
             Dictionary<string, string> StartEvent = new Dictionary<string, string>();
             StartEvent.Add("Files", opts.EnableAllCollectors ? "True" : opts.EnableFileSystemCollector.ToString(CultureInfo.InvariantCulture));
@@ -888,14 +1042,14 @@ namespace AttackSurfaceAnalyzer.Cli
             StartEvent.Add("EventLog", opts.EnableEventLogCollector.ToString(CultureInfo.InvariantCulture));
             StartEvent.Add("Tpm", opts.EnableEventLogCollector.ToString(CultureInfo.InvariantCulture));
             StartEvent.Add("Keys", opts.EnableKeyCollector.ToString(CultureInfo.InvariantCulture));
+            StartEvent.Add("Drivers", opts.EnableDriverCollector.ToString(CultureInfo.InvariantCulture));
+            StartEvent.Add("Process", opts.EnableProcessCollector.ToString(CultureInfo.InvariantCulture));
+            StartEvent.Add("Wifi", opts.EnableWifiCollector.ToString(CultureInfo.InvariantCulture));
             StartEvent.Add("Admin", AsaHelpers.IsAdmin().ToString(CultureInfo.InvariantCulture));
             AsaTelemetry.TrackEvent("Run Command", StartEvent);
 
-            AdminOrQuit();
+            AdminOrWarn();
 
-            CheckFirstRun();
-
-            int returnValue = (int)ASA_ERROR.NONE;
             opts.RunId = opts.RunId?.Trim() ?? DateTime.Now.ToString("o", CultureInfo.InvariantCulture);
 
             if (opts.MatchedCollectorId != null)
@@ -945,6 +1099,18 @@ namespace AttackSurfaceAnalyzer.Cli
 
                             case RESULT_TYPE.TPM:
                                 opts.EnableTpmCollector = true;
+                                break;
+
+                            case RESULT_TYPE.PROCESS:
+                                opts.EnableProcessCollector = true;
+                                break;
+
+                            case RESULT_TYPE.DRIVER:
+                                opts.EnableDriverCollector = true;
+                                break;
+
+                            case RESULT_TYPE.WIFI:
+                                opts.EnableWifiCollector = true;
                                 break;
                         }
                     }
@@ -1010,11 +1176,26 @@ namespace AttackSurfaceAnalyzer.Cli
                 collectors.Add(new CryptographicKeyCollector(opts, defaultChangeHandler));
                 dict.Add(RESULT_TYPE.KEY);
             }
+            if (opts.EnableProcessCollector || opts.EnableAllCollectors)
+            {
+                collectors.Add(new ProcessCollector(opts, defaultChangeHandler));
+                dict.Add(RESULT_TYPE.PROCESS);
+            }
+            if (opts.EnableDriverCollector || opts.EnableAllCollectors)
+            {
+                collectors.Add(new DriverCollector(opts, defaultChangeHandler));
+                dict.Add(RESULT_TYPE.DRIVER);
+            }
+            if (opts.EnableWifiCollector || opts.EnableAllCollectors)
+            {
+                collectors.Add(new WifiCollector(opts, defaultChangeHandler));
+                dict.Add(RESULT_TYPE.WIFI);
+            }
 
             if (collectors.Count == 0)
             {
                 Log.Warning(Strings.Get("Err_NoCollectors"));
-                return (int)ASA_ERROR.NO_COLLECTORS;
+                return ASA_ERROR.NO_COLLECTORS;
             }
 
             if (opts.Overwrite)
@@ -1026,7 +1207,7 @@ namespace AttackSurfaceAnalyzer.Cli
                 if (DatabaseManager.GetRun(opts.RunId) != null)
                 {
                     Log.Error(Strings.Get("Err_RunIdAlreadyUsed"));
-                    return (int)ASA_ERROR.UNIQUE_ID;
+                    return ASA_ERROR.UNIQUE_ID;
                 }
             }
             Log.Information(Strings.Get("Begin"), opts.RunId);
@@ -1040,13 +1221,14 @@ namespace AttackSurfaceAnalyzer.Cli
             using CancellationTokenSource source = new CancellationTokenSource();
             CancellationToken token = source.Token;
 
-            Console.CancelKeyPress += delegate
+            void cancelKeyDelegate(object sender, ConsoleCancelEventArgs args)
             {
                 Log.Information("Cancelling collection. Rolling back transaction. Please wait to avoid corrupting database.");
                 source.Cancel();
                 DatabaseManager.CloseDatabase();
-                Environment.Exit(-1);
-            };
+                Environment.Exit((int)ASA_ERROR.CANCELLED);
+            }
+            Console.CancelKeyPress += cancelKeyDelegate;
 
             Dictionary<string, string> EndEvent = new Dictionary<string, string>();
             foreach (BaseCollector c in collectors)
@@ -1069,13 +1251,17 @@ namespace AttackSurfaceAnalyzer.Cli
                     ExceptionEvent.Add("Stack Trace", e.StackTrace ?? string.Empty);
                     ExceptionEvent.Add("Message", e.Message);
                     AsaTelemetry.TrackEvent("CollectorCrashRogueException", ExceptionEvent);
-                    returnValue = 1;
+                    Console.CancelKeyPress -= cancelKeyDelegate;
+
+                    return ASA_ERROR.FAILED_TO_COMMIT;
                 }
             }
             AsaTelemetry.TrackEvent("End Command", EndEvent);
 
             DatabaseManager.Commit();
-            return returnValue;
+            Console.CancelKeyPress -= cancelKeyDelegate;
+
+            return ASA_ERROR.NONE;
         }
 
         private static void FlushResults()
@@ -1084,7 +1270,6 @@ namespace AttackSurfaceAnalyzer.Cli
             var totFlush = prevFlush;
 
             var printInterval = new TimeSpan(0, 0, 10);
-            var now = DateTime.Now;
             var then = DateTime.Now;
 
             var StopWatch = Stopwatch.StartNew();
@@ -1105,7 +1290,7 @@ namespace AttackSurfaceAnalyzer.Cli
                     Log.Information("It is taking a while to flush results to the database.  Try increasing the sharding level to improve performance.");
                     warnedToIncreaseShards = true;
                 }
-                now = DateTime.Now;
+                var now = DateTime.Now;
                 if (now - then > printInterval)
                 {
                     var actualDuration = now - then;

@@ -1,5 +1,6 @@
 ﻿using AttackSurfaceAnalyzer.Utils;
 using BenchmarkDotNet.Attributes;
+using System.Data.Entity;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -9,7 +10,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
     [JsonExporterAttribute.Full]
     public class InsertTestsWithoutTransactions : AsaDatabaseBenchmark
     {
-        #region Public Constructors
+#nullable disable
 
         public InsertTestsWithoutTransactions()
 #nullable restore
@@ -17,10 +18,6 @@ namespace AttackSurfaceAnalyzer.Benchmarks
             Logger.Setup(true, true);
             Strings.Setup();
         }
-
-        #endregion Public Constructors
-
-        #region Public Properties
 
         [Params(10)]
         public int BatchSize { get; set; }
@@ -37,8 +34,8 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [Params(10000)]
         public int N { get; set; }
 
-        // The amount of padding to add to the object in bytes Default size is approx 530 bytes
-        // serialized Does not include SQL overhead
+        // The amount of padding to add to the object in bytes Default size is approx 530 bytes serialized
+        // Does not include SQL overhead
         [Params(0, 4500)]
         public int ObjectPadding { get; set; }
 
@@ -57,22 +54,16 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [Params("OFF")]
         public string Synchronous { get; set; }
 
-        #endregion Public Properties
-
-#nullable disable
-
-        #region Public Methods
-
-        public static void Insert_X_Objects(int X, int ObjectPadding = 0, string runName = "Insert_X_Objects")
+        public static void Insert_X_Objects(int X, DatabaseManager dbManager, int ObjectPadding = 0, string runName = "Insert_X_Objects")
         {
             Parallel.For(0, X, i =>
             {
                 var obj = GetRandomObject(ObjectPadding);
-                DatabaseManager.Write(obj, runName);
+                dbManager.Write(obj, runName);
                 BagOfObjects.Add(obj);
             });
 
-            while (DatabaseManager.HasElements)
+            while (dbManager.HasElements)
             {
                 Thread.Sleep(1);
             }
@@ -82,7 +73,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         public void GlobalCleanup()
         {
             Setup();
-            DatabaseManager.Destroy();
+            dbManager.Destroy();
         }
 
         [GlobalSetup]
@@ -92,39 +83,37 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         }
 
         [Benchmark]
-        public void Insert_N_Objects() => Insert_X_Objects(N, ObjectPadding, "Insert_N_Objects");
+        public void Insert_N_Objects() => Insert_X_Objects(N, dbManager, ObjectPadding, "Insert_N_Objects");
 
         [IterationCleanup]
         public void IterationCleanup()
         {
-            DatabaseManager.CloseDatabase();
+            dbManager.CloseDatabase();
         }
 
         [IterationSetup]
         public void IterationSetup()
         {
             Setup();
-            DatabaseManager.BeginTransaction();
+            dbManager.BeginTransaction();
         }
 
         public void PopulateDatabases()
         {
             Setup();
-            DatabaseManager.BeginTransaction();
+            dbManager.BeginTransaction();
 
-            Insert_X_Objects(StartingSize, ObjectPadding, "PopulateDatabase");
+            Insert_X_Objects(StartingSize, dbManager, ObjectPadding, "PopulateDatabase");
 
-            DatabaseManager.Commit();
-            DatabaseManager.CloseDatabase();
+            dbManager.Commit();
+            dbManager.CloseDatabase();
         }
 
-        #endregion Public Methods
-
-        #region Private Methods
+        private DatabaseManager dbManager;
 
         private void Setup()
         {
-            DatabaseManager.Setup(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
+            dbManager = new SqliteDatabaseManager(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
             {
                 JournalMode = JournalMode,
                 LockingMode = LockingMode,
@@ -133,8 +122,8 @@ namespace AttackSurfaceAnalyzer.Benchmarks
                 Synchronous = Synchronous,
                 BatchSize = BatchSize
             });
-        }
 
-        #endregion Private Methods
+            dbManager.Setup();
+        }
     }
 }

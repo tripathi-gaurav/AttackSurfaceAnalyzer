@@ -9,8 +9,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
     [JsonExporterAttribute.Full]
     public class InsertTestsWithIntermittentTransactions : AsaDatabaseBenchmark
     {
-        #region Public Constructors
-
+#nullable disable
         public InsertTestsWithIntermittentTransactions()
 #nullable restore
         {
@@ -18,12 +17,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
             Strings.Setup();
         }
 
-        #endregion Public Constructors
-
-        #region Public Properties
-
-        // If not -1, how many records each writer should write before committing. When -1 don't do
-        // checkpoint commits.
+        // If not -1, how many records each writer should write before committing. When -1 don't do checkpoint commits.
         [Params(-1)]
         public int FlushCount { get; set; }
 
@@ -37,8 +31,8 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [Params(100000, 1000000)]
         public int N { get; set; }
 
-        // The amount of padding to add to the object in bytes Default size is approx 530 bytes
-        // serialized Does not include SQL overhead
+        // The amount of padding to add to the object in bytes Default size is approx 530 bytes serialized
+        // Does not include SQL overhead
         [Params(0)]
         public int ObjectPadding { get; set; }
 
@@ -51,37 +45,32 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [Params(0)]
         public int StartingSize { get; set; }
 
-        #endregion Public Properties
-
         // Bag of reusable objects to write to the database.
-#nullable disable
-
-        #region Public Methods
 
         public static void Insert_X_Objects(int X, int ObjectPadding = 0, string runName = "Insert_X_Objects")
         {
-            DatabaseManager.BeginTransaction();
+            dbManager.BeginTransaction();
 
             Parallel.For(0, X, i =>
             {
                 var obj = GetRandomObject(ObjectPadding);
-                DatabaseManager.Write(obj, runName);
+                dbManager.Write(obj, runName);
                 BagOfObjects.Add(obj);
             });
 
-            while (DatabaseManager.HasElements)
+            while (dbManager.HasElements)
             {
                 Thread.Sleep(1);
             }
 
-            DatabaseManager.Commit();
+            dbManager.Commit();
         }
 
         [GlobalCleanup]
         public void GlobalCleanup()
         {
             Setup();
-            DatabaseManager.Destroy();
+            dbManager.Destroy();
         }
 
         [GlobalSetup]
@@ -96,11 +85,11 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [IterationCleanup]
         public void IterationCleanup()
         {
-            DatabaseManager.BeginTransaction();
-            DatabaseManager.DeleteRun("Insert_N_Objects");
-            DatabaseManager.Commit();
-            DatabaseManager.Vacuum();
-            DatabaseManager.CloseDatabase();
+            dbManager.BeginTransaction();
+            dbManager.DeleteRun("Insert_N_Objects");
+            dbManager.Commit();
+            dbManager.Vacuum();
+            dbManager.CloseDatabase();
         }
 
         [IterationSetup]
@@ -115,19 +104,20 @@ namespace AttackSurfaceAnalyzer.Benchmarks
 
             Insert_X_Objects(StartingSize, ObjectPadding, "PopulateDatabase");
 
-            DatabaseManager.CloseDatabase();
+            dbManager.CloseDatabase();
         }
 
         public void Setup()
         {
-            DatabaseManager.Setup(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
+            dbManager = new SqliteDatabaseManager(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
             {
                 ShardingFactor = Shards,
                 FlushCount = FlushCount,
                 JournalMode = JournalMode
             });
+            dbManager.Setup();
         }
 
-        #endregion Public Methods
+        private static DatabaseManager dbManager;
     }
 }

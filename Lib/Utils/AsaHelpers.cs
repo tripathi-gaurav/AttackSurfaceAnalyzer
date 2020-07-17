@@ -17,16 +17,6 @@ namespace AttackSurfaceAnalyzer.Utils
 {
     public static class AsaHelpers
     {
-        #region Private Fields
-
-        private static readonly Random random = new Random();
-
-        private static readonly ConcurrentDictionary<string, string> SidMap = new ConcurrentDictionary<string, string>();
-
-        #endregion Private Fields
-
-        #region Public Methods
-
         public static Dictionary<string, string> GenerateMetadata()
         {
             var dict = new Dictionary<string, string>();
@@ -155,7 +145,11 @@ namespace AttackSurfaceAnalyzer.Utils
 
         public static bool IsAdmin()
         {
-            return Elevation.IsAdministrator() || Elevation.IsRunningAsRoot();
+            if (_elevated is null)
+            {
+                _elevated = Elevation.IsAdministrator() || Elevation.IsRunningAsRoot();
+            }
+            return (bool)_elevated;
         }
 
         public static bool IsDictionary(object o)
@@ -172,22 +166,6 @@ namespace AttackSurfaceAnalyzer.Utils
             return o is IList &&
                    o.GetType().IsGenericType &&
                    o.GetType().GetGenericTypeDefinition().IsAssignableFrom(typeof(List<>));
-        }
-
-        public static bool IsValidRegex(string pattern)
-        {
-            if (string.IsNullOrEmpty(pattern)) return false;
-
-            try
-            {
-                Regex.Match("", pattern);
-            }
-            catch (ArgumentException)
-            {
-                return false;
-            }
-
-            return true;
         }
 
         public static string MakeValidFileName(string name)
@@ -253,6 +231,10 @@ namespace AttackSurfaceAnalyzer.Utils
             return sid;
         }
 
-        #endregion Public Methods
+        private static bool? _elevated = null;
+
+        private static readonly Random random = new Random();
+
+        private static readonly ConcurrentDictionary<string, string> SidMap = new ConcurrentDictionary<string, string>();
     }
 }

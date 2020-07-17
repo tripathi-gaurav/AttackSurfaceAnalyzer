@@ -3,20 +3,19 @@ using AttackSurfaceAnalyzer.Types;
 using AttackSurfaceAnalyzer.Utils;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System;
+using System.Diagnostics;
 
 namespace AttackSurfaceAnalyzer.Tests
 {
     [TestClass]
     public class HydrationTests
     {
-        #region Public Methods
-
         [ClassInitialize]
         public static void ClassSetup(TestContext _)
         {
             Logger.Setup(false, true);
             Strings.Setup();
-            AsaTelemetry.Setup(test: true);
+            AsaTelemetry.SetEnabled(enabled:false);
         }
 
         [TestMethod]
@@ -50,6 +49,16 @@ namespace AttackSurfaceAnalyzer.Tests
 
             var hydrated = JsonUtils.Hydrate(JsonUtils.Dehydrate(cko), RESULT_TYPE.KEY);
             Assert.IsTrue(cko.RowKey.Equals(hydrated.RowKey));
+        }
+
+        public void TestSerializeAndDeserializeDriverObject()
+        {
+            var DriverName = "MyName";
+            var driverObject = new DriverObject(DriverName);
+            var serialized = JsonUtils.Dehydrate(driverObject);
+            var rehydrated = JsonUtils.Hydrate(serialized, RESULT_TYPE.DRIVER);
+            Assert.IsTrue(serialized == JsonUtils.Dehydrate(rehydrated));
+            Assert.IsTrue(rehydrated.Identity == DriverName);
         }
 
         [TestMethod]
@@ -93,6 +102,14 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         [TestMethod]
+        public void TestSerializeAndDeserializeProcessObject()
+        {
+            var po = ProcessObject.FromProcess(Process.GetCurrentProcess());
+            var serialized = JsonUtils.Dehydrate(po);
+            Assert.IsTrue(serialized == JsonUtils.Dehydrate(JsonUtils.Hydrate(serialized, RESULT_TYPE.PROCESS)));
+        }
+
+        [TestMethod]
         public void TestSerializeAndDeserializeRegistryObject()
         {
             var ro = new RegistryObject("Test Key", Microsoft.Win32.RegistryView.Default);
@@ -123,7 +140,5 @@ namespace AttackSurfaceAnalyzer.Tests
 
             Assert.IsTrue(uao.RowKey.Equals(JsonUtils.Hydrate(JsonUtils.Dehydrate(uao), RESULT_TYPE.USER)?.RowKey));
         }
-
-        #endregion Public Methods
     }
 }

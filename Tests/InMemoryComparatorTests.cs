@@ -13,14 +13,12 @@ namespace AttackSurfaceAnalyzer.Tests
     [TestClass]
     public class InMemoryComparatorTests
     {
-        #region Public Methods
-
         [ClassInitialize]
         public static void ClassSetup(TestContext _)
         {
             Logger.Setup(false, true);
             Strings.Setup();
-            AsaTelemetry.Setup(test: true);
+            AsaTelemetry.SetEnabled(enabled:false);
         }
 
         [TestMethod]
@@ -74,7 +72,5 @@ namespace AttackSurfaceAnalyzer.Tests
 
             Assert.IsTrue(results[(RESULT_TYPE.LOG, CHANGE_TYPE.DELETED)].Any(x => x.Base is EventLogObject));
         }
-
-        #endregion Public Methods
     }
 }

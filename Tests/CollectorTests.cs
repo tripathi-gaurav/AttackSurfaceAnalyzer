@@ -31,11 +31,22 @@ namespace AttackSurfaceAnalyzer.Tests
         {
             Logger.Setup(false, true);
             Strings.Setup();
-            AsaTelemetry.Setup(test: true);
+            AsaTelemetry.SetEnabled(enabled: false);
         }
 
         /// <summary>
-        /// Does not require admin.
+        /// We can't actually guarantee there's any wifi networks on the test system.
+        /// So we just check that it doesn't crash.
+        /// </summary>
+        [TestMethod]
+        public void TestWifiCollector()
+        {
+            var wc = new WifiCollector();
+            wc.TryExecute();
+        }
+
+        /// <summary>
+        ///     Does not require admin.
         /// </summary>
         [TestMethod]
         public void TestCertificateCollectorWindows()
@@ -53,14 +64,14 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         /// <summary>
-        /// Requires admin.
+        ///     Requires admin.
         /// </summary>
         [TestMethod]
         public void TestComObjectCollector()
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                var coc = new ComObjectCollector(new CollectCommandOptions());
+                var coc = new ComObjectCollector(new CollectorOptions());
                 coc.TryExecute();
 
                 Assert.IsTrue(coc.Results.Any(x => x is ComObject y && y.x86_Binary != null));
@@ -74,7 +85,19 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         /// <summary>
-        /// Requires Admin
+        ///     Administrator not required
+        /// </summary>
+        [TestMethod]
+        public void TestDriverCollector()
+        {
+            var dc = new DriverCollector(new CollectorOptions());
+            dc.TryExecute();
+
+            Assert.IsTrue(dc.Results.Any());
+        }
+
+        /// <summary>
+        ///     Requires Admin
         /// </summary>
         [TestMethod]
         public void TestEventCollectorWindows()
@@ -96,13 +119,13 @@ namespace AttackSurfaceAnalyzer.Tests
             eventLog.Source = "Attack Surface Analyzer Tests";
             eventLog.WriteEntry("This Log Entry was created for testing the Attack Surface Analyzer library.", EventLogEntryType.Warning, 101, 1);
 
-            var elc = new EventLogCollector(new CollectCommandOptions());
+            var elc = new EventLogCollector(new CollectorOptions());
             elc.TryExecute();
 
             Assert.IsTrue(elc.Results.Any(x => x is EventLogObject ELO && ELO.Source == "Attack Surface Analyzer Tests" && ELO.Timestamp is DateTime DT && DT.AddMinutes(1).CompareTo(DateTime.Now) > 0));
 
             ConcurrentStack<CollectObject> results = new ConcurrentStack<CollectObject>();
-            elc = new EventLogCollector(new CollectCommandOptions(), x => results.Push(x));
+            elc = new EventLogCollector(new CollectorOptions(), x => results.Push(x));
             elc.TryExecute();
 
             Assert.IsTrue(results.Any(x => x is EventLogObject ELO && ELO.Source == "Attack Surface Analyzer Tests" && ELO.Timestamp is DateTime DT && DT.AddMinutes(1).CompareTo(DateTime.Now) > 0));
@@ -117,11 +140,11 @@ namespace AttackSurfaceAnalyzer.Tests
             var testFolder = AsaHelpers.GetTempFolder();
             Directory.CreateDirectory(testFolder);
 
-            var opts = new CollectCommandOptions()
+            var opts = new CollectorOptions()
             {
                 EnableFileSystemCollector = true,
                 GatherHashes = true,
-                SelectedDirectories = testFolder,
+                SelectedDirectories = new string[] { testFolder },
                 DownloadCloud = false,
             };
 
@@ -154,19 +177,21 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         /// <summary>
-        /// Does not require admin
+        ///     Does not require admin
         /// </summary>
         [TestMethod]
         public void TestFileMonitor()
         {
             var stack = new ConcurrentStack<FileMonitorObject>();
-            var monitor = new FileSystemMonitor(new MonitorCommandOptions() { MonitoredDirectories = Path.GetTempPath() }, x => stack.Push(x));
+            var monitor = new FileSystemMonitor(new MonitorCommandOptions() { MonitoredDirectories = new string[] { Path.GetTempPath() } }, x => stack.Push(x));
             monitor.StartRun();
 
             var created = Path.GetTempFileName(); // Create a file
             var renamed = $"{created}-renamed";
             File.WriteAllText(created, "Test"); // Change the size
+            Thread.Sleep(50);
             File.Move(created, renamed); // Rename it
+            Thread.Sleep(50);
             File.Delete(renamed); //Delete it
 
             Thread.Sleep(100);
@@ -180,7 +205,7 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         /// <summary>
-        /// Requires root.
+        ///     Requires root.
         /// </summary>
         [TestMethod]
         public void TestFirewallCollectorLinux()
@@ -199,7 +224,7 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         /// <summary>
-        /// Requires root.
+        ///     Requires root.
         /// </summary>
         [TestMethod]
         public void TestFirewallCollectorOSX()
@@ -266,7 +291,7 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         /// <summary>
-        /// Does not require Admin.
+        ///     Does not require Admin.
         /// </summary>
         [TestMethod]
         public void TestPortCollectorWindows()
@@ -303,7 +328,21 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         /// <summary>
-        /// Does not require administrator.
+        ///     Administrator recommended
+        /// </summary>
+        [TestMethod]
+        public void TestProcessCollector()
+        {
+            var pc = new ProcessCollector(new CollectorOptions());
+            pc.TryExecute();
+
+            var p = Process.GetCurrentProcess();
+
+            Assert.IsTrue(pc.Results.Any(x => x is ProcessObject y && y.ProcessName == p.ProcessName));
+        }
+
+        /// <summary>
+        ///     Does not require administrator.
         /// </summary>
         [TestMethod]
         public void TestRegistryCollectorWindows()
@@ -320,14 +359,14 @@ namespace AttackSurfaceAnalyzer.Tests
                 key.SetValue(value, value2);
                 key.Close();
 
-                var rc = new RegistryCollector(new CollectCommandOptions() { SingleThread = true, SelectedHives = $"CurrentUser\\{name}" });
+                var rc = new RegistryCollector(new CollectorOptions() { SingleThread = true, SelectedHives = $"CurrentUser\\{name}" });
                 rc.TryExecute();
 
                 Assert.IsTrue(rc.Results.Any(x => x is RegistryObject RO && RO.Key.EndsWith(name)));
                 Assert.IsTrue(rc.Results.Any(x => x is RegistryObject RO && RO.Key.EndsWith(name) && RO.Values.ContainsKey(value) && RO.Values[value] == value2));
 
                 ConcurrentStack<CollectObject> results = new ConcurrentStack<CollectObject>();
-                rc = new RegistryCollector(new CollectCommandOptions() { SingleThread = true, SelectedHives = $"CurrentUser\\{name}" }, x => results.Push(x));
+                rc = new RegistryCollector(new CollectorOptions() { SingleThread = true, SelectedHives = $"CurrentUser\\{name}" }, x => results.Push(x));
                 rc.TryExecute();
 
                 Assert.IsTrue(results.Any(x => x is RegistryObject RO && RO.Key.EndsWith(name)));
@@ -338,21 +377,20 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         /// <summary>
-        /// Requires Administrator Priviledges.
+        ///     Requires Administrator Priviledges.
         /// </summary>
         [TestMethod]
         public void TestServiceCollectorWindows()
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                // Create a service - This won't throw an exception, but it won't work if you are
-                // not an Admin.
+                // Create a service - This won't throw an exception, but it won't work if you are not an Admin.
                 var serviceName = "AsaDemoService";
                 var exeName = "AsaDemoService.exe";
                 var cmd = string.Format("create {0} binPath=\"{1}\"", serviceName, exeName);
                 ExternalCommandRunner.RunExternalCommand("sc.exe", cmd);
 
-                var sc = new ServiceCollector(new CollectCommandOptions());
+                var sc = new ServiceCollector(new CollectorOptions());
                 sc.TryExecute();
 
                 Assert.IsTrue(sc.Results.Any(x => x is ServiceObject RO && RO.Name.Equals(serviceName)));
@@ -370,7 +408,7 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         /// <summary>
-        /// Requires Admin
+        ///     Requires Admin
         /// </summary>
         [TestMethod]
         public void TestTpmCollector()
@@ -384,7 +422,7 @@ namespace AttackSurfaceAnalyzer.Tests
                 var nvData = new byte[] { 0, 1, 2, 3, 4, 5, 6, 7 };
                 uint nvIndex = 3001;
 
-                var tpmc = new TpmCollector(new CollectCommandOptions() { Verbose = true }, null, TestMode: true);
+                var tpmc = new TpmCollector(new CollectorOptions() { Verbose = true }, null, TestMode: true);
                 // Prepare to write to NV 3001
                 TpmHandle nvHandle = TpmHandle.NV(nvIndex);
 
@@ -474,7 +512,7 @@ namespace AttackSurfaceAnalyzer.Tests
         }
 
         /// <summary>
-        /// Requires Administrator Priviledges.
+        ///     Requires Administrator Priviledges.
         /// </summary>
         [TestMethod]
         public void TestUserCollectorWindows()

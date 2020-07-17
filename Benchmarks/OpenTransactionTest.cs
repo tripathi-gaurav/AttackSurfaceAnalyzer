@@ -7,7 +7,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
     [JsonExporterAttribute.Full]
     public class OpenTransactionTest : AsaDatabaseBenchmark
     {
-        #region Public Constructors
+#nullable disable
 
         public OpenTransactionTest()
 #nullable restore
@@ -15,10 +15,6 @@ namespace AttackSurfaceAnalyzer.Benchmarks
             Logger.Setup(true, true);
             Strings.Setup();
         }
-
-        #endregion Public Constructors
-
-        #region Public Properties
 
         [Params("OFF", "DELETE", "WAL", "MEMORY")]
         public string JournalMode { get; set; }
@@ -32,23 +28,17 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [Params(0)]
         public int StartingSize { get; set; }
 
-        #endregion Public Properties
-
-#nullable disable
-
-        #region Public Methods
-
         [Benchmark]
         public void BeginTransaction()
         {
-            DatabaseManager.BeginTransaction();
+            dbManager.BeginTransaction();
         }
 
         [GlobalCleanup]
         public void GlobalCleanup()
         {
             Setup();
-            DatabaseManager.Destroy();
+            dbManager.Destroy();
         }
 
         [GlobalSetup]
@@ -60,7 +50,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [IterationCleanup]
         public void IterationCleanup()
         {
-            DatabaseManager.CloseDatabase();
+            dbManager.CloseDatabase();
         }
 
         [IterationSetup]
@@ -72,23 +62,24 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         public void PopulateDatabases()
         {
             Setup();
-            DatabaseManager.BeginTransaction();
+            dbManager.BeginTransaction();
 
-            InsertTestsWithoutTransactions.Insert_X_Objects(StartingSize);
+            InsertTestsWithoutTransactions.Insert_X_Objects(StartingSize, dbManager, 0, "Insert_X_Objects");
 
-            DatabaseManager.Commit();
-            DatabaseManager.CloseDatabase();
+            dbManager.Commit();
+            dbManager.CloseDatabase();
         }
 
         public void Setup()
         {
-            DatabaseManager.Setup(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
+            dbManager = new SqliteDatabaseManager(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
             {
                 JournalMode = JournalMode,
                 ShardingFactor = Shards
             });
+            dbManager.Setup();
         }
 
-        #endregion Public Methods
+        private DatabaseManager dbManager;
     }
 }

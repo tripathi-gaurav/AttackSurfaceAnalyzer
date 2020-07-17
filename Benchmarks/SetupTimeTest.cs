@@ -9,7 +9,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
     [JsonExporterAttribute.Full]
     public class SetupTimeTest : AsaDatabaseBenchmark
     {
-        #region Public Constructors
+#nullable disable
 
         public SetupTimeTest()
 #nullable restore
@@ -18,10 +18,6 @@ namespace AttackSurfaceAnalyzer.Benchmarks
             Strings.Setup();
         }
 
-        #endregion Public Constructors
-
-        #region Public Properties
-
         //[Params("OFF","DELETE","WAL","MEMORY")]
         [Params("OFF", "DELETE", "WAL", "MEMORY")]
         public string JournalMode { get; set; }
@@ -29,8 +25,8 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [Params("NORMAL", "EXCLUSIVE")]
         public string LockingMode { get; set; }
 
-        // The amount of padding to add to the object in bytes Default size is approx 530 bytes
-        // serialized Does not include SQL overhead
+        // The amount of padding to add to the object in bytes Default size is approx 530 bytes serialized
+        // Does not include SQL overhead
         [Params(0)]
         public int ObjectPadding { get; set; }
 
@@ -49,32 +45,11 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [Params("OFF", "NORMAL")]
         public string Synchronous { get; set; }
 
-        #endregion Public Properties
-
-#nullable disable
-
-        #region Public Methods
-
-        public static void Insert_X_Objects(int X, int ObjectPadding = 0, string runName = "Insert_X_Objects")
-        {
-            Parallel.For(0, X, i =>
-            {
-                var obj = GetRandomObject(ObjectPadding);
-                DatabaseManager.Write(obj, runName);
-                BagOfObjects.Add(obj);
-            });
-
-            while (DatabaseManager.HasElements)
-            {
-                Thread.Sleep(1);
-            }
-        }
-
         [GlobalCleanup]
         public void GlobalCleanup()
         {
             Setup();
-            DatabaseManager.Destroy();
+            dbManager.Destroy();
         }
 
         [GlobalSetup]
@@ -83,10 +58,25 @@ namespace AttackSurfaceAnalyzer.Benchmarks
             PopulateDatabases();
         }
 
+        public void Insert_X_Objects(int X, int ObjectPadding = 0, string runName = "Insert_X_Objects")
+        {
+            Parallel.For(0, X, i =>
+            {
+                var obj = GetRandomObject(ObjectPadding);
+                dbManager.Write(obj, runName);
+                BagOfObjects.Add(obj);
+            });
+
+            while (dbManager.HasElements)
+            {
+                Thread.Sleep(1);
+            }
+        }
+
         [IterationCleanup]
         public void IterationCleanup()
         {
-            DatabaseManager.CloseDatabase();
+            dbManager.CloseDatabase();
         }
 
         [IterationSetup]
@@ -97,22 +87,20 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         public void PopulateDatabases()
         {
             Setup();
-            DatabaseManager.BeginTransaction();
+            dbManager.BeginTransaction();
 
             Insert_X_Objects(StartingSize, ObjectPadding, "PopulateDatabase");
 
-            DatabaseManager.Commit();
-            DatabaseManager.CloseDatabase();
+            dbManager.Commit();
+            dbManager.CloseDatabase();
         }
 
-        #endregion Public Methods
-
-        #region Private Methods
+        private DatabaseManager dbManager;
 
         [Benchmark]
         private void Setup()
         {
-            DatabaseManager.Setup(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
+            dbManager = new SqliteDatabaseManager(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
             {
                 JournalMode = JournalMode,
                 LockingMode = LockingMode,
@@ -120,8 +108,8 @@ namespace AttackSurfaceAnalyzer.Benchmarks
                 ShardingFactor = Shards,
                 Synchronous = Synchronous
             });
-        }
 
-        #endregion Private Methods
+            dbManager.Setup();
+        }
     }
 }

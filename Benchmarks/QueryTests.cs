@@ -1,6 +1,7 @@
 ﻿using AttackSurfaceAnalyzer.Utils;
 using BenchmarkDotNet.Attributes;
 using System.Collections.Concurrent;
+using System.Data.Entity;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -10,18 +11,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
     [JsonExporterAttribute.Full]
     public class QueryTests : AsaDatabaseBenchmark
     {
-        #region Private Fields
-
-        // Bag of reusable identities
-        private static readonly ConcurrentBag<(string, string)> BagOfIdentities = new ConcurrentBag<(string, string)>();
-
-        private readonly string RunOneName = "RunOne";
-
-        private readonly string RunTwoName = "RunTwo";
-
-        #endregion Private Fields
-
-        #region Public Constructors
+#nullable disable
 
         public QueryTests()
 #nullable restore
@@ -29,10 +19,6 @@ namespace AttackSurfaceAnalyzer.Benchmarks
             Logger.Setup(true, true);
             Strings.Setup();
         }
-
-        #endregion Public Constructors
-
-        #region Public Properties
 
         // Percent of identities which should match between the two runs (% of the smaller run)
         [Params(0, .25, .5, .75, 1)]
@@ -46,8 +32,8 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [Params("NORMAL")]
         public string LockingMode { get; set; }
 
-        // The amount of padding to add to the object in bytes Default size is approx 530 bytes
-        // serialized Does not include SQL overhead
+        // The amount of padding to add to the object in bytes Default size is approx 530 bytes serialized
+        // Does not include SQL overhead
         [Params(0)]
         public int ObjectPadding { get; set; }
 
@@ -79,47 +65,41 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [Params("OFF")]
         public string Synchronous { get; set; }
 
-        #endregion Public Properties
-
-#nullable disable
-
-        #region Public Methods
-
         [Benchmark]
         public void GetAllMissing2Test()
         {
-            DatabaseManager.GetAllMissing2(RunOneName, RunTwoName);
+            ((SqliteDatabaseManager)dbManager).GetAllMissing2(RunOneName, RunTwoName);
         }
 
         [Benchmark]
         public void GetAllMissingExplicitIndexing()
         {
-            DatabaseManager.GetAllMissingExplicit(RunOneName, RunTwoName);
+            ((SqliteDatabaseManager)dbManager).GetAllMissingExplicit(RunOneName, RunTwoName);
         }
 
         [Benchmark(Baseline = true)]
         public void GetAllMissingTest()
         {
-            DatabaseManager.GetAllMissing(RunOneName, RunTwoName);
+            dbManager.GetAllMissing(RunOneName, RunTwoName);
         }
 
         //[Benchmark]
         //public void GetModifiedTest()
         //{
-        //    DatabaseManager.GetModified(RunOneName, RunTwoName);
+        //    dbManager.GetModified(RunOneName, RunTwoName);
         //}
         [Benchmark]
         public void GetMissingFromFirstTwice()
         {
-            DatabaseManager.GetMissingFromFirst(RunOneName, RunTwoName);
-            DatabaseManager.GetMissingFromFirst(RunTwoName, RunOneName);
+            dbManager.GetMissingFromFirst(RunOneName, RunTwoName);
+            dbManager.GetMissingFromFirst(RunTwoName, RunOneName);
         }
 
         [GlobalCleanup]
         public void GlobalCleanup()
         {
             Setup();
-            DatabaseManager.Destroy();
+            dbManager.Destroy();
         }
 
         [GlobalSetup]
@@ -133,7 +113,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
             Parallel.For(0, RunOneSize, i =>
             {
                 var obj = GetRandomObject(ObjectPadding);
-                DatabaseManager.Write(obj, RunOneName);
+                dbManager.Write(obj, RunOneName);
 
                 if (obj.FileType != null)
                 {
@@ -141,7 +121,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
                 }
             });
 
-            while (DatabaseManager.HasElements)
+            while (dbManager.HasElements)
             {
                 Thread.Sleep(1);
             }
@@ -165,7 +145,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
                     }
                 }
 
-                DatabaseManager.Write(obj, RunTwoName);
+                dbManager.Write(obj, RunTwoName);
                 BagOfObjects.Add(obj);
             });
         }
@@ -173,7 +153,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [IterationCleanup]
         public void IterationCleanup()
         {
-            DatabaseManager.CloseDatabase();
+            dbManager.CloseDatabase();
         }
 
         [IterationSetup]
@@ -185,32 +165,35 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         //[Benchmark]
         //public void GetMissingFromFirstTest()
         //{
-        //    DatabaseManager.GetMissingFromFirst(RunOneName, RunTwoName);
+        //    dbManager.GetMissingFromFirst(RunOneName, RunTwoName);
         //}
         public void PopulateDatabases()
         {
             Setup();
-            DatabaseManager.BeginTransaction();
+            dbManager.BeginTransaction();
 
             InsertFirstRun();
             InsertSecondRun();
 
-            while (DatabaseManager.HasElements)
+            while (dbManager.HasElements)
             {
                 Thread.Sleep(1);
             }
 
-            DatabaseManager.Commit();
-            DatabaseManager.CloseDatabase();
+            dbManager.Commit();
+            dbManager.CloseDatabase();
         }
 
-        #endregion Public Methods
+        // Bag of reusable identities
+        private static readonly ConcurrentBag<(string, string)> BagOfIdentities = new ConcurrentBag<(string, string)>();
 
-        #region Private Methods
+        private readonly string RunOneName = "RunOne";
+        private readonly string RunTwoName = "RunTwo";
+        private DatabaseManager dbManager;
 
         private void Setup()
         {
-            DatabaseManager.Setup(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
+            dbManager = new SqliteDatabaseManager(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
             {
                 JournalMode = JournalMode,
                 LockingMode = LockingMode,
@@ -218,8 +201,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
                 ShardingFactor = Shards,
                 Synchronous = Synchronous
             });
+            dbManager.Setup();
         }
-
-        #endregion Private Methods
     }
 }

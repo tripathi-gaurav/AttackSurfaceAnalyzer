@@ -1,5 +1,6 @@
 ﻿using AttackSurfaceAnalyzer.Utils;
 using BenchmarkDotNet.Attributes;
+using System.Data.Entity;
 
 namespace AttackSurfaceAnalyzer.Benchmarks
 {
@@ -7,7 +8,7 @@ namespace AttackSurfaceAnalyzer.Benchmarks
     [JsonExporterAttribute.Full]
     public class CommitTest
     {
-        #region Public Constructors
+#nullable disable
 
         public CommitTest()
 #nullable enable
@@ -15,10 +16,6 @@ namespace AttackSurfaceAnalyzer.Benchmarks
             Logger.Setup(true, true);
             Strings.Setup();
         }
-
-        #endregion Public Constructors
-
-        #region Public Properties
 
         [Params("OFF", "DELETE", "WAL", "MEMORY")]
         public string JournalMode { get; set; }
@@ -31,41 +28,38 @@ namespace AttackSurfaceAnalyzer.Benchmarks
         [Params(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)]
         public int Shards { get; set; }
 
-        #endregion Public Properties
-
-#nullable disable
-
-        #region Public Methods
-
         [Benchmark]
         public void CommitTransaction()
         {
-            DatabaseManager.Commit();
+            dbManager.Commit();
         }
 
         [IterationCleanup]
         public void IterationCleanup()
         {
-            DatabaseManager.Destroy();
+            dbManager.Destroy();
         }
 
         [IterationSetup]
         public void IterationSetup()
         {
             Setup();
-            DatabaseManager.BeginTransaction();
-            InsertTestsWithoutTransactions.Insert_X_Objects(N);
+            dbManager.BeginTransaction();
+            InsertTestsWithoutTransactions.Insert_X_Objects(N, dbManager);
         }
 
         public void Setup()
         {
-            DatabaseManager.Setup(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
+            dbManager = new SqliteDatabaseManager(filename: $"AsaBenchmark_{Shards}.sqlite", new DBSettings()
             {
                 JournalMode = JournalMode,
                 ShardingFactor = Shards
             });
+            dbManager.Setup();
         }
 
-        #endregion Public Methods
+        private DatabaseManager dbManager;
+
+#nullable disable
     }
 }
